@@ -10,16 +10,30 @@ import https from 'https';
 import { URLSearchParams } from 'url';
 
 const [
-  extensionId,
-  clientId,
-  clientSecret,
-  refreshToken,
-  zipFilePath,
+  extensionIdArg,
+  clientIdArg,
+  clientSecretArg,
+  refreshTokenArg,
+  zipFilePathArg,
   publish = 'false'
 ] = process.argv.slice(2);
 
+// Support both command-line arguments and environment variables
+const extensionId = extensionIdArg || process.env.CHROME_EXTENSION_ID;
+const clientId = clientIdArg || process.env.CHROME_CLIENT_ID;
+const clientSecret = clientSecretArg || process.env.CHROME_CLIENT_SECRET;
+const refreshToken = refreshTokenArg || process.env.CHROME_REFRESH_TOKEN;
+const zipFilePath = zipFilePathArg || process.env.CHROME_ZIP_FILE || './clipsy-extension.zip';
+
 if (!extensionId || !clientId || !clientSecret || !refreshToken || !zipFilePath) {
   console.error('Usage: node upload-to-chrome-store.js <extension-id> <client-id> <client-secret> <refresh-token> <zip-file> [publish]');
+  console.error('');
+  console.error('Alternatively, set these environment variables:');
+  console.error('  CHROME_EXTENSION_ID');
+  console.error('  CHROME_CLIENT_ID');
+  console.error('  CHROME_CLIENT_SECRET');
+  console.error('  CHROME_REFRESH_TOKEN');
+  console.error('  CHROME_ZIP_FILE (optional, defaults to ./clipsy-extension.zip)');
   process.exit(1);
 }
 

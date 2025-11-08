@@ -33,6 +33,26 @@ jobs:
           cd ..
           ls -lh clipsy-extension.zip
 
+      - name: Validate secrets
+        run: |
+          if [ -z "${{ secrets.CHROME_EXTENSION_ID }}" ]; then
+            echo "❌ Error: CHROME_EXTENSION_ID secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.CHROME_CLIENT_ID }}" ]; then
+            echo "❌ Error: CHROME_CLIENT_ID secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.CHROME_CLIENT_SECRET }}" ]; then
+            echo "❌ Error: CHROME_CLIENT_SECRET secret is not set"
+            exit 1
+          fi
+          if [ -z "${{ secrets.CHROME_REFRESH_TOKEN }}" ]; then
+            echo "❌ Error: CHROME_REFRESH_TOKEN secret is not set"
+            exit 1
+          fi
+          echo "✅ All required secrets are configured"
+
       - name: Upload to Chrome Web Store
         run: |
           node scripts/upload-to-chrome-store.js \
