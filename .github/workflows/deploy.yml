@@ -34,7 +34,7 @@ jobs:
           ls -lh clipsy-extension.zip
 
       - name: Upload to Chrome Web Store
-        uses: Foxycorp/upload-chrome-extension@v1
+        uses: mnao305/chrome-extension-upload@v2.0.0
         with:
           extension-id: ${{ secrets.CHROME_EXTENSION_ID }}
           client-id: ${{ secrets.CHROME_CLIENT_ID }}
