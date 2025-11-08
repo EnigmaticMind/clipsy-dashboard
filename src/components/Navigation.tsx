@@ -54,6 +54,16 @@ export default function Navigation() {
             >
               Contact
             </Link>
+            <Link
+              to="/privacy"
+              className={`px-4 py-2 rounded-lg transition ${
+                isActive("/privacy")
+                  ? "bg-indigo-600 text-white"
+                  : "text-gray-700 hover:bg-gray-100"
+              }`}
+            >
+              Privacy
+            </Link>
           </div>
         </div>
       </div>

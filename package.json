@@ -9,7 +9,11 @@
     "build:dev": "tsc && vite build --mode development",
     "build:extension": "tsc && vite build",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:ui": "vitest --ui",
+    "test:run": "vitest run",
+    "test:e2e": "vitest run src/services/__tests__/e2e.test.ts"
   },
   "dependencies": {
     "@types/papaparse": "^5.5.0",
@@ -28,7 +32,9 @@
     "@typescript-eslint/eslint-plugin": "^7.13.0",
     "@typescript-eslint/parser": "^7.13.0",
     "@vitejs/plugin-react": "^4.3.1",
+    "@vitest/ui": "^1.0.0",
     "autoprefixer": "^10.4.19",
+    "jsdom": "^23.0.0",
     "eslint": "^8.57.0",
     "eslint-plugin-react-hooks": "^4.6.2",
     "eslint-plugin-react-refresh": "^0.4.7",
@@ -36,6 +42,7 @@
     "tailwindcss": "^3.4.3",
     "typescript": "^5.5.3",
     "vite": "^5.3.4",
+    "vitest": "^1.0.0",
     "vite-plugin-pwa": "^0.20.0",
     "workbox-window": "^7.1.0"
   }

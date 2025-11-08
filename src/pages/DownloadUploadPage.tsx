@@ -9,7 +9,7 @@ import {
 } from "../services/oauth";
 import { getShopID, fetchListings, ListingStatus } from "../services/etsyApi";
 import { convertListingsToCSV, downloadCSV } from "../services/csvService";
-import { previewUploadCSV } from "../services/previewService";
+import { PreviewResponse, previewUploadCSV } from "../services/previewService";
 import { applyUploadCSV } from "../services/applyService";
 import { createBackupCSV } from "../services/backupService";
 
@@ -20,7 +20,8 @@ export default function DownloadUploadPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [listingStatus, setListingStatus] = useState<string>("all");
-  const [previewData, setPreviewData] = useState<any>(null);
+  ``;
+  const [previewData, setPreviewData] = useState<PreviewResponse | null>(null);
   const [previewFile, setPreviewFile] = useState<File | null>(null);
   const [isApplying, setIsApplying] = useState(false);
 
@@ -58,7 +59,11 @@ export default function DownloadUploadPage() {
       const status =
         listingStatus === "all" ? undefined : (listingStatus as ListingStatus);
       const listings = await fetchListings(shopID, status, (current, total) => {
-        setLoadingMessage(`Fetching your listings... ${current}/${total} (${Math.round((current / total) * 100)}%)`);
+        setLoadingMessage(
+          `Fetching your listings... ${current}/${total} (${Math.round(
+            (current / total) * 100
+          )}%)`
+        );
       });
 
       // Convert to CSV
@@ -66,17 +71,15 @@ export default function DownloadUploadPage() {
       const csvContent = convertListingsToCSV(listings);
 
       // Download CSV
-      const filename = `etsy-listings-${
+      const filename = `clipsy-listings-${
         new Date().toISOString().split("T")[0]
       }.csv`;
       downloadCSV(csvContent, filename);
 
-      setLoadingMessage("Download complete!");
       toast.showSuccess("Listings downloaded successfully!");
-      setTimeout(() => {
-        setIsLoading(false);
-        setLoadingMessage("");
-      }, 1000);
+
+      setIsLoading(false);
+      setLoadingMessage("");
     } catch (error) {
       console.error("Download error:", error);
       setIsLoading(false);
@@ -138,6 +141,17 @@ export default function DownloadUploadPage() {
           return;
         }
 
+        // Validate summary
+        if (!preview.changes || preview.changes.length === 0) {
+          setIsLoading(false);
+          setLoadingMessage("");
+          console.info("No changes found in the CSV file:", preview);
+          toast.showInfo(
+            "No changes found in the CSV file. Please try again with a different file."
+          );
+          return;
+        }
+
         setIsLoading(false);
         setLoadingMessage("");
         setPreviewData(preview);
@@ -181,7 +195,10 @@ export default function DownloadUploadPage() {
     }
   };
 
-  const handleApplyChanges = async (acceptedChangeIds: string[], createBackup: boolean) => {
+  const handleApplyChanges = async (
+    acceptedChangeIds: string[],
+    createBackup: boolean
+  ) => {
     if (!previewFile || !previewData) return;
 
     setIsApplying(true);
@@ -209,18 +226,26 @@ export default function DownloadUploadPage() {
       // Now apply the changes with progress tracking
       setLoadingMessage("Applying changes to Etsy...");
       const acceptedSet = new Set(acceptedChangeIds);
-      await applyUploadCSV(previewFile, acceptedSet, (current, total, failed) => {
-        setLoadingMessage(
-          `Applying changes... ${current}/${total} (${Math.round((current / total) * 100)}%)${failed > 0 ? ` - ${failed} failed` : ''}`
-        );
-      });
+      await applyUploadCSV(
+        previewFile,
+        acceptedSet,
+        (current, total, failed) => {
+          setLoadingMessage(
+            `Applying changes... ${current}/${total} (${Math.round(
+              (current / total) * 100
+            )}%)${failed > 0 ? ` - ${failed} failed` : ""}`
+          );
+        }
+      );
 
       setIsApplying(false);
       setLoadingMessage("");
       setPreviewData(null);
       setPreviewFile(null);
       toast.showSuccess(
-        `${createBackup ? "Backup created and " : ""}${acceptedChangeIds.length} change${
+        `${createBackup ? "Backup created and " : ""}${
+          acceptedChangeIds.length
+        } change${
           acceptedChangeIds.length !== 1 ? "s" : ""
         } applied successfully!`
       );
@@ -326,7 +351,9 @@ export default function DownloadUploadPage() {
               >
                 <option value="all">All Listings</option>
                 <option value="active">Active</option>
-                <option value="draft">Draft</option>
+                <option value="draft" selected>
+                  Draft
+                </option>
                 <option value="inactive">Inactive</option>
                 <option value="sold_out">Sold Out</option>
                 <option value="expired">Expired</option>

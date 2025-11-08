@@ -1,6 +1,8 @@
 // OAuth service for Etsy authentication - client-side only
 // Based on PKCE flow, no backend needed
 
+import { logger } from '../utils/logger'
+
 const ETSY_AUTH_URL = 'https://www.etsy.com/oauth/connect'
 const ETSY_TOKEN_URL = 'https://api.etsy.com/v3/public/oauth/token'
 
@@ -21,7 +23,7 @@ function getRedirectURL(): string {
   if (typeof chrome !== 'undefined' && chrome.identity && chrome.identity.getRedirectURL) {
     // Get base redirect URL and append dashboard.html#/auth
     const redirectURL = chrome.identity.getRedirectURL('dashboard.html#/auth')
-    console.log('Chrome extension redirect URL:', redirectURL)
+    logger.log('Chrome extension redirect URL:', redirectURL)
     return redirectURL
   }
   
@@ -87,7 +89,7 @@ export async function initOAuthFlow(): Promise<{ authUrl: string; state: string;
   const codeChallenge = await generateCodeChallenge(codeVerifier)
   const state = generateState()
 
-  console.log('Redirect URL:', redirectURL)
+  logger.log('Redirect URL:', redirectURL)
   
   const scopes = ['listings_r', 'listings_w', 'shops_r']
   
@@ -110,17 +112,17 @@ export async function initOAuthFlow(): Promise<{ authUrl: string; state: string;
   
   // For Chrome extension, launch auth flow directly
   if (typeof chrome !== 'undefined' && chrome.identity && chrome.identity.launchWebAuthFlow) {
-    console.log('Starting OAuth flow with redirect URL:', redirectURL)
-    console.log('Auth URL:', authUrl)
+    logger.log('Starting OAuth flow with redirect URL:', redirectURL)
+    logger.log('Auth URL:', authUrl)
     
     return new Promise((resolve, reject) => {
       chrome.identity.launchWebAuthFlow(
         { url: authUrl, interactive: true },
         async (redirectUrl) => {
-          console.log('Redirect URL Response:', redirectUrl)
+          logger.log('Redirect URL Response:', redirectUrl)
           if (chrome.runtime.lastError) {
             const errorMsg = chrome.runtime.lastError.message
-            console.error('OAuth error:', errorMsg)
+            logger.error('OAuth error:', errorMsg)
 
             // Provide more helpful error messages
             if (errorMsg && (errorMsg.includes('redirect_uri_mismatch') || errorMsg.includes('redirect'))) {
@@ -146,8 +148,8 @@ export async function initOAuthFlow(): Promise<{ authUrl: string; state: string;
             return
           }
           
-          console.log('Received redirect URL:', redirectUrl)
-          console.log('Full redirect URL for debugging:', JSON.stringify(redirectUrl))
+          logger.log('Received redirect URL:', redirectUrl)
+          logger.log('Full redirect URL for debugging:', JSON.stringify(redirectUrl))
           
           // Parse code and state from redirect URL
           // The redirect URL from chrome.identity.launchWebAuthFlow will be:
@@ -155,8 +157,8 @@ export async function initOAuthFlow(): Promise<{ authUrl: string; state: string;
           // (or just the base URL with query params if we didn't include dashboard.html#/auth)
           const url = new URL(redirectUrl)
           const urlSearchParams = new URLSearchParams(url.hash.substring(url.hash.indexOf("?")))
-          console.log('Parsed URL search params:', url.search)
-          console.log('URL search params entries:', Array.from(url.searchParams.entries()))
+          logger.log('Parsed URL search params:', url.search)
+          logger.log('URL search params entries:', Array.from(url.searchParams.entries()))
           
           const code = urlSearchParams.get('code')
           const returnedState = urlSearchParams.get('state')
@@ -171,7 +173,7 @@ export async function initOAuthFlow(): Promise<{ authUrl: string; state: string;
           
           if (!code) {
             // Log more details for debugging
-            console.error('No code found in redirect URL. URL details:', {
+            logger.error('No code found in redirect URL. URL details:', {
               href: redirectUrl,
               search: url.search,
               searchParams: Array.from(urlSearchParams.entries()),

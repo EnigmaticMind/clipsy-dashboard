@@ -289,9 +289,8 @@ The CSV file contains the following columns:
 - Property Price
 - Property Is Enabled
 
-### Variation Property IDs (5 columns)
+### Variation Property IDs (4 columns)
 
-- Property Product ID
 - Property ID 1
 - Property Option IDs 1
 - Property ID 2

@@ -3,6 +3,8 @@ import LoadingSpinner from "../components/LoadingSpinner";
 import EtsyTrademark from "../components/EtsyTrademark";
 import UploadPreview from "../components/UploadPreview";
 import ContactForm from "../components/ContactForm";
+import { useToast } from "../contexts/ToastContext";
+import { logger } from "../utils/logger";
 
 import {
   checkAuthStatus,
@@ -16,6 +18,7 @@ import { applyUploadCSV } from "../services/applyService";
 import { createBackupCSV } from "../services/backupService";
 
 export default function LandingPage() {
+  const toast = useToast();
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState("");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -76,17 +79,20 @@ export default function LandingPage() {
         setLoadingMessage("");
       }, 1000);
     } catch (error) {
-      console.error("Download error:", error);
+      logger.error("Download error:", error);
       setIsLoading(false);
       setLoadingMessage("");
       if (error instanceof Error && error.message.includes("No token")) {
-        alert("Please authenticate with Etsy first");
+        toast.showError("Please authenticate with Etsy first to download listings.");
+      } else if (error instanceof Error && error.message.includes("rate limit")) {
+        toast.showError("Rate limit exceeded. Please wait a few minutes and try again.");
+      } else if (error instanceof Error && error.message.includes("network")) {
+        toast.showError("Network error. Please check your internet connection and try again.");
       } else {
-        alert(
-          error instanceof Error
-            ? error.message
-            : "Failed to download listings. Please try again."
-        );
+        const errorMessage = error instanceof Error
+          ? error.message
+          : "Failed to download listings. Please check your connection and try again.";
+        toast.showError(errorMessage);
       }
     }
   };
@@ -110,7 +116,7 @@ export default function LandingPage() {
         if (!preview) {
           setIsLoading(false);
           setLoadingMessage("");
-          alert("Invalid preview response. Please try again.");
+          toast.showError("Invalid preview response. The CSV file may be corrupted or in an unsupported format. Please try downloading a fresh CSV from the extension.");
           return;
         }
 
@@ -118,10 +124,8 @@ export default function LandingPage() {
         if (!preview.changes || !Array.isArray(preview.changes)) {
           setIsLoading(false);
           setLoadingMessage("");
-          console.error("Invalid preview structure:", preview);
-          alert(
-            `Invalid preview response: missing or invalid 'changes' array. Please try again.`
-          );
+          logger.error("Invalid preview structure:", preview);
+          toast.showError("Invalid CSV format: missing changes data. Please ensure you're uploading a CSV file downloaded from this extension.");
           return;
         }
 
@@ -129,10 +133,8 @@ export default function LandingPage() {
         if (!preview.summary || typeof preview.summary !== "object") {
           setIsLoading(false);
           setLoadingMessage("");
-          console.error("Invalid preview structure:", preview);
-          alert(
-            `Invalid preview response: missing or invalid 'summary' object. Please try again.`
-          );
+          logger.error("Invalid preview structure:", preview);
+          toast.showError("Invalid CSV format: missing summary data. Please ensure you're uploading a CSV file downloaded from this extension.");
           return;
         }
 
@@ -141,14 +143,22 @@ export default function LandingPage() {
         setPreviewData(preview);
         setPreviewFile(file);
       } catch (error) {
-        console.error("Upload error:", error);
+        logger.error("Upload error:", error);
         setIsLoading(false);
         setLoadingMessage("");
-        alert(
-          error instanceof Error
-            ? error.message
-            : "Failed to analyze file. Please try again."
-        );
+        if (error instanceof Error) {
+          if (error.message.includes("rate limit")) {
+            toast.showError("Rate limit exceeded. Please wait a few minutes before uploading again.");
+          } else if (error.message.includes("network") || error.message.includes("fetch")) {
+            toast.showError("Network error while analyzing file. Please check your connection and try again.");
+          } else if (error.message.includes("parse") || error.message.includes("CSV")) {
+            toast.showError("Failed to parse CSV file. Please ensure the file is a valid CSV downloaded from this extension.");
+          } else {
+            toast.showError(`Failed to analyze file: ${error.message}`);
+          }
+        } else {
+          toast.showError("Failed to analyze file. Please ensure the file is a valid CSV and try again.");
+        }
       }
     };
     input.click();
@@ -168,14 +178,20 @@ export default function LandingPage() {
       setIsLoading(false);
       setLoadingMessage("");
     } catch (error) {
-      console.error("Authentication error:", error);
+      logger.error("Authentication error:", error);
       setIsLoading(false);
       setLoadingMessage("");
-      alert(
-        error instanceof Error
-          ? error.message
-          : "Authentication failed. Please try again."
-      );
+      if (error instanceof Error) {
+        if (error.message.includes("popup")) {
+          toast.showError("Authentication popup was blocked. Please allow popups for this site and try again.");
+        } else if (error.message.includes("network")) {
+          toast.showError("Network error during authentication. Please check your connection and try again.");
+        } else {
+          toast.showError(`Authentication failed: ${error.message}`);
+        }
+      } else {
+        toast.showError("Authentication failed. Please try again.");
+      }
     }
   };
 
@@ -190,40 +206,43 @@ export default function LandingPage() {
         try {
           await createBackupCSV(previewData, acceptedChangeIds);
         } catch (error) {
-          console.error("Error creating backup:", error);
+          logger.error("Error creating backup:", error);
           // Ask user if they want to continue without backup
-          const continueWithoutBackup = confirm(
-            "Failed to create backup. Do you want to continue applying changes anyway?"
-          );
-          if (!continueWithoutBackup) {
-            setIsApplying(false);
-            return;
-          }
+          toast.showError("Failed to create backup. You can still proceed, but changes cannot be undone.");
+          // Note: We'll continue anyway since backup is optional
         }
       }
 
       const acceptedSet = new Set(acceptedChangeIds);
       await applyUploadCSV(previewFile, acceptedSet, (current, total, failed) => {
         // Progress tracking (could add UI update here if needed)
-        console.log(`Progress: ${current}/${total}${failed > 0 ? ` - ${failed} failed` : ''}`);
+        logger.log(`Progress: ${current}/${total}${failed > 0 ? ` - ${failed} failed` : ''}`);
       });
 
       setIsApplying(false);
       setPreviewData(null);
       setPreviewFile(null);
-      alert(
+      toast.showSuccess(
         `${createBackup ? "Backup created and " : ""}${acceptedChangeIds.length} change${
           acceptedChangeIds.length !== 1 ? "s" : ""
         } applied successfully!`
       );
     } catch (error) {
-      console.error("Apply error:", error);
+      logger.error("Apply error:", error);
       setIsApplying(false);
-      alert(
-        error instanceof Error
-          ? error.message
-          : "Failed to apply changes. Please try again."
-      );
+      if (error instanceof Error) {
+        if (error.message.includes("rate limit")) {
+          toast.showError("Rate limit exceeded while applying changes. Some changes may not have been applied. Please wait a few minutes and try again.");
+        } else if (error.message.includes("network")) {
+          toast.showError("Network error while applying changes. Some changes may not have been applied. Please check your connection and try again.");
+        } else if (error.message.includes("permission") || error.message.includes("unauthorized")) {
+          toast.showError("Permission denied. Please ensure you're authenticated and have permission to edit these listings.");
+        } else {
+          toast.showError(`Failed to apply changes: ${error.message}`);
+        }
+      } else {
+        toast.showError("Failed to apply changes. Please check your connection and try again.");
+      }
     }
   };
 

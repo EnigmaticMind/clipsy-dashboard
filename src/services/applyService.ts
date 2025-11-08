@@ -2,7 +2,7 @@
 // Ported from backend Go code
 
 import { parseUploadCSV, ProcessedListing } from './uploadService'
-import { getShopID, getListing, deleteListing, Listing } from './etsyApi'
+import { getShopID, getListing, deleteListing, Listing, makeEtsyRequest } from './etsyApi'
 import { getValidAccessToken } from './oauth'
 import { createListing, updateListing, updateListingInventory } from './listingOperations'
 import { 
@@ -11,6 +11,7 @@ import {
   loadUploadProgress, 
   clearUploadProgress
 } from './progressService'
+import { logger } from '../utils/logger'
 
 // Apply changes from CSV file with progress persistence and batch fetching
 // acceptedChangeIds: Set of change IDs to apply (from preview)
@@ -37,7 +38,7 @@ export async function applyUploadCSV(
 
   if (existingProgress) {
     // Resume from previous progress
-    console.log(`Resuming upload from previous session (${existingProgress.processedListingIDs.length}/${existingProgress.totalListings} completed)`)
+    logger.log(`Resuming upload from previous session (${existingProgress.processedListingIDs.length}/${existingProgress.totalListings} completed)`)
     processedListingIDs = existingProgress.processedListingIDs
     failedListingIDs = existingProgress.failedListingIDs
   }
@@ -69,6 +70,49 @@ export async function applyUploadCSV(
     )
   }
 
+  // Check if we need to create any new listings (need taxonomy_id, shipping_profile_id, and readiness_state_id for that)
+  const hasNewListings = filteredListings.some(l => l.listingID === 0 && !l.toDelete)
+  let defaultTaxonomyID: number | undefined = undefined
+  let defaultReadinessStateID: number | undefined = undefined
+
+  // If we need to create listings, fetch one existing listing to get required fields
+  if (hasNewListings) {
+    try {
+      // Fetch one listing from the shop to get taxonomy_id, shipping_profile_id, and readiness_state_id
+      const firstListingResponse = await makeEtsyRequest(
+        'GET',
+        `/application/shops/${shopID}/listings?limit=1&includes=Inventory,Shipping`
+      )
+      const firstListingData = await firstListingResponse.json()
+      
+      if (firstListingData.results && firstListingData.results.length > 0) {
+        const firstListing = firstListingData.results[0]
+        if (firstListing.taxonomy_id) {
+          defaultTaxonomyID = firstListing.taxonomy_id
+          logger.log(`Using taxonomy_id ${defaultTaxonomyID} from existing listing`)
+        }
+        // Also fetch readiness_state_id from first offering (required for physical listings)
+        if (firstListing.inventory && firstListing.inventory.products.length > 0) {
+          const firstProduct = firstListing.inventory.products.find((p: { is_deleted?: boolean }) => !p.is_deleted)
+          if (firstProduct && firstProduct.offerings && firstProduct.offerings.length > 0) {
+            const firstOffering = firstProduct.offerings.find((o: { is_deleted?: boolean }) => !o.is_deleted)
+            if (firstOffering && firstOffering.readiness_state_id) {
+              defaultReadinessStateID = firstOffering.readiness_state_id
+              logger.log(`Using readiness_state_id ${defaultReadinessStateID} from existing listing`)
+            }
+          }
+        }
+      }
+      
+      if (!defaultTaxonomyID) {
+        throw new Error('Could not find taxonomy_id from existing listings. Please ensure you have at least one listing in your shop.')
+      }
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error'
+      throw new Error(`Failed to get required fields for creating new listings: ${errorMsg}. Please ensure you have at least one existing listing in your shop.`)
+    }
+  }
+
   // Batch fetch all existing listings we need to update (in parallel)
   const listingIDsToFetch = filteredListings
     .filter(l => l.listingID > 0 && !l.toDelete)
@@ -77,14 +121,14 @@ export async function applyUploadCSV(
   const existingListingsMap = new Map<number, Listing>()
   
   if (listingIDsToFetch.length > 0) {
-    console.log(`Batch fetching ${listingIDsToFetch.length} existing listings...`)
+    logger.log(`Batch fetching ${listingIDsToFetch.length} existing listings...`)
     const batchSize = 10 // Fetch 10 listings in parallel
     
     for (let i = 0; i < listingIDsToFetch.length; i += batchSize) {
       const batch = listingIDsToFetch.slice(i, i + batchSize)
       const batchPromises = batch.map(id => 
         getListing(id).catch(error => {
-          console.error(`Error fetching listing ${id}:`, error)
+          logger.error(`Error fetching listing ${id}:`, error)
           return null // Return null on error, we'll handle it later
         })
       )
@@ -94,6 +138,10 @@ export async function applyUploadCSV(
       batchResults.forEach((listing, idx) => {
         if (listing) {
           existingListingsMap.set(batch[idx], listing)
+          // Also capture taxonomy_id from first listing if we don't have it yet
+          if (!defaultTaxonomyID && listing.taxonomy_id) {
+            defaultTaxonomyID = listing.taxonomy_id
+          }
         }
       })
     }
@@ -133,31 +181,51 @@ export async function applyUploadCSV(
 
   // Helper function to process a single listing
   async function processListing(listing: ProcessedListing, existingListing: Listing | undefined): Promise<void> {
+    // defaultTaxonomyID is captured from closure
     try {
       // Handle delete
       if (listing.toDelete) {
         if (listing.listingID === 0) {
-          console.warn('Cannot delete listing without Listing ID')
+          logger.warn('Cannot delete listing without Listing ID')
           return
         }
         await deleteListing(shopID, listing.listingID)
-        console.log(`Deleted listing ${listing.listingID}`)
+        logger.log(`Deleted listing ${listing.listingID}`)
         processedListingIDs.push(listing.listingID)
         return
       }
 
       // Handle create (no listing ID)
       if (listing.listingID === 0) {
-        const newListingID = await createListing(shopID, listing)
-        console.log(`Created listing ${newListingID}`)
-
-        // Update inventory for new listing
-        try {
-          await updateListingInventory(newListingID, listing, null)
-        } catch (error) {
-          console.error(`Error updating inventory for new listing ${newListingID}:`, error)
-          // Continue - listing was created
+        if (!defaultTaxonomyID) {
+          const errorMsg = 'Cannot create listing: taxonomy_id is required. Please ensure you have at least one existing listing in your shop.'
+          logger.error(errorMsg)
+          failedListingIDs.push({ listingID: 0, error: errorMsg })
+          return
         }
+        
+        let newListingID: number
+        try {
+          newListingID = await createListing(shopID, listing, defaultTaxonomyID)
+          logger.log(`Created listing ${newListingID}`)
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : 'Unknown error'
+          logger.error(`Error creating listing:`, error)
+          failedListingIDs.push({ listingID: 0, error: `Listing creation failed: ${errorMsg}` })
+          return
+        }
+
+            // Update inventory for new listing
+            try {
+              await updateListingInventory(newListingID, listing, null, defaultReadinessStateID, shopID)
+              logger.log(`Updated inventory for new listing ${newListingID}`)
+            } catch (error) {
+              const errorMsg = error instanceof Error ? error.message : 'Unknown error'
+              logger.error(`Error updating inventory for new listing ${newListingID}:`, error)
+              // Listing was created but inventory update failed - mark as failed with details
+              failedListingIDs.push({ listingID: newListingID, error: `Inventory update failed: ${errorMsg}` })
+              return
+            }
         processedListingIDs.push(0) // Track creates with 0
         return
       }
@@ -169,7 +237,7 @@ export async function applyUploadCSV(
           existingListing = await getListing(listing.listingID)
         } catch (error) {
           const errorMsg = error instanceof Error ? error.message : 'Unknown error'
-          console.error(`Error fetching existing listing ${listing.listingID}:`, error)
+          logger.error(`Error fetching existing listing ${listing.listingID}:`, error)
           failedListingIDs.push({ listingID: listing.listingID, error: errorMsg })
           return
         }
@@ -179,25 +247,31 @@ export async function applyUploadCSV(
       try {
         await updateListing(shopID, listing.listingID, listing, existingListing)
       } catch (error) {
-        console.error(`Error updating listing ${listing.listingID}:`, error)
-        // Continue - try inventory update anyway
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error'
+        logger.error(`Error updating listing ${listing.listingID}:`, error)
+        // If it's a critical error, mark as failed
+        // Otherwise continue - try inventory update anyway
+        if (errorMsg.includes('required') || errorMsg.includes('invalid') || errorMsg.includes('must')) {
+          failedListingIDs.push({ listingID: listing.listingID, error: `Listing update failed: ${errorMsg}` })
+          return
+        }
       }
 
       // Update inventory (only if changed)
       try {
-        await updateListingInventory(listing.listingID, listing, existingListing)
+        await updateListingInventory(listing.listingID, listing, existingListing, defaultReadinessStateID, shopID)
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : 'Unknown error'
-        console.error(`Error updating inventory for listing ${listing.listingID}:`, error)
-        failedListingIDs.push({ listingID: listing.listingID, error: errorMsg })
+        logger.error(`Error updating inventory for listing ${listing.listingID}:`, error)
+        failedListingIDs.push({ listingID: listing.listingID, error: `Inventory update failed: ${errorMsg}` })
         return
       }
 
-      console.log(`Updated listing ${listing.listingID}`)
+      logger.log(`Updated listing ${listing.listingID}`)
       processedListingIDs.push(listing.listingID)
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error'
-      console.error(`Error processing listing ${listing.listingID}:`, error)
+      logger.error(`Error processing listing ${listing.listingID}:`, error)
       if (listing.listingID > 0) {
         failedListingIDs.push({ listingID: listing.listingID, error: errorMsg })
       }

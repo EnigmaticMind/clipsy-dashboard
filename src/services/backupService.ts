@@ -3,6 +3,7 @@
 import { getListing } from './etsyApi'
 import { convertListingsToCSV, downloadCSV } from './csvService'
 import { PreviewResponse } from './previewService'
+import { logger } from '../utils/logger'
 
 /**
  * Creates a CSV backup of all listings that will be changed (updated or deleted)
@@ -29,7 +30,7 @@ export async function createBackupCSV(
   }
 
   if (listingIDs.size === 0) {
-    console.log('No existing listings to backup (only creates or no accepted changes)')
+    logger.log('No existing listings to backup (only creates or no accepted changes)')
     return
   }
 
@@ -40,13 +41,13 @@ export async function createBackupCSV(
       const listing = await getListing(listingID)
       listingsToBackup.push(listing)
     } catch (error) {
-      console.error(`Error fetching listing ${listingID} for backup:`, error)
+      logger.error(`Error fetching listing ${listingID} for backup:`, error)
       // Continue with other listings - don't fail the whole backup
     }
   }
 
   if (listingsToBackup.length === 0) {
-    console.log('No listings could be fetched for backup')
+    logger.log('No listings could be fetched for backup')
     return
   }
 
@@ -61,6 +62,6 @@ export async function createBackupCSV(
   const filename = `etsy-backup-before-changes-${timestamp}.csv`
   downloadCSV(csvContent, filename)
   
-  console.log(`Backup created: ${filename} (${listingsToBackup.length} listings)`)
+  logger.log(`Backup created: ${filename} (${listingsToBackup.length} listings)`)
 }
 

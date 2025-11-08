@@ -2,8 +2,9 @@
 // Ported from backend Go code
 
 import { parseUploadCSV, ProcessedListing, ProcessedVariation } from './uploadService'
-import { fetchListings, Listing, getShopID } from './etsyApi'
+import { getListing, Listing } from './etsyApi'
 import { getValidAccessToken } from './oauth'
+import { logger } from '../utils/logger'
 
 export interface FieldChange {
   field: string
@@ -237,29 +238,38 @@ export async function previewUploadCSV(file: File): Promise<PreviewResponse> {
   // Get access token
   await getValidAccessToken()
 
-  // Get shop ID
-  const shopID = await getShopID()
-
   // Parse CSV
   const newListings = await parseUploadCSV(file)
 
-  // Fetch all existing listings for comparison in parallel
-  const [activeListings, draftListings, inactiveListings] = await Promise.all([
-    fetchListings(shopID, 'active'),
-    fetchListings(shopID, 'draft'),
-    fetchListings(shopID, 'inactive')
-  ])
+  // Extract listing IDs from CSV (only fetch listings we're actually updating)
+  const listingIDsToFetch = newListings
+    .filter(l => l.listingID > 0 && !l.toDelete)
+    .map(l => l.listingID)
 
-  const allListings: Listing[] = [
-    ...activeListings.results,
-    ...draftListings.results,
-    ...inactiveListings.results
-  ]
-
-  // Create a map of existing listings by ID
+  // Fetch only the existing listings we need for comparison
   const existingListingsMap = new Map<number, Listing>()
-  for (const listing of allListings) {
-    existingListingsMap.set(listing.listing_id, listing)
+  
+  if (listingIDsToFetch.length > 0) {
+    // Fetch only the existing listings we need for comparison
+    const batchSize = 10 // Fetch 10 listings in parallel
+    
+    for (let i = 0; i < listingIDsToFetch.length; i += batchSize) {
+      const batch = listingIDsToFetch.slice(i, i + batchSize)
+      const batchPromises = batch.map(id => 
+        getListing(id).catch(error => {
+          logger.error(`Error fetching listing ${id}:`, error)
+          return null // Return null on error, we'll handle it later
+        })
+      )
+      
+      const batchResults = await Promise.all(batchPromises)
+      
+      batchResults.forEach((listing, idx) => {
+        if (listing) {
+          existingListingsMap.set(batch[idx], listing)
+        }
+      })
+    }
   }
 
   const changes: PreviewChange[] = []
@@ -530,7 +540,7 @@ export async function previewUploadCSV(file: File): Promise<PreviewResponse> {
     }
 
     // Compare variations
-    let variationChanges: VariationChange[] = []
+    const variationChanges: VariationChange[] = []
     if (newListing.hasVariations) {
       // Create map of existing variations by product ID
       const existingVariationsMap = new Map<

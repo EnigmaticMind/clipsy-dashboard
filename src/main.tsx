@@ -7,6 +7,7 @@ import Layout from "./components/MainLayout";
 import DownloadUploadPage from "./pages/DownloadUploadPage";
 import HowItWorksPage from "./pages/HowItWorksPage";
 import ContactPage from "./pages/ContactPage";
+import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
 import AuthPage from "./pages/AuthPage";
 
 // HashRouter is required for Chrome extensions because:
@@ -29,6 +30,10 @@ const router = createHashRouter([
       {
         path: "contact",
         element: <ContactPage />,
+      },
+      {
+        path: "privacy",
+        element: <PrivacyPolicyPage />,
       },
     ],
   },

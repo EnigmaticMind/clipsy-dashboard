@@ -2,6 +2,7 @@
 // No backend needed if CORS allows
 
 import { getValidAccessToken } from './oauth'
+import { logger } from '../utils/logger'
 
 const ETSY_API_BASE_URL = 'https://api.etsy.com/v3'
 
@@ -60,17 +61,58 @@ export async function makeEtsyRequest(
       
       if (!response.ok) {
         const status = response.status
-        const error = await response.json().catch(() => ({ error: `HTTP ${status}` }))
+        let errorData: any
+        try {
+          errorData = await response.json()
+        } catch {
+          // If JSON parsing fails, create a basic error object
+          const text = await response.text().catch(() => '')
+          errorData = { error: `HTTP ${status}`, message: text || `HTTP ${status}` }
+        }
+        
+        // Log full error details for debugging
+        logger.error(`Etsy API error (${status}):`, {
+          endpoint,
+          method,
+          status,
+          error: errorData,
+        })
         
         // If retryable and we have retries left, retry
-        if (isRetryableError(error, status) && attempt < retries) {
+        if (isRetryableError(errorData, status) && attempt < retries) {
           const delay = RETRY_DELAY_BASE * Math.pow(2, attempt) // Exponential backoff
-          console.log(`Request failed (${status}), retrying in ${delay}ms... (attempt ${attempt + 1}/${retries + 1})`)
+          logger.log(`Request failed (${status}), retrying in ${delay}ms... (attempt ${attempt + 1}/${retries + 1})`)
           await new Promise(resolve => setTimeout(resolve, delay))
           continue
         }
         
-        throw new Error(error.error || error.message || `API request failed: ${status}`)
+        // Extract error message from various possible formats
+        let errorMessage = errorData.error || errorData.message || `API request failed: ${status}`
+        
+        // Handle Etsy API specific error formats
+        if (errorData.errors && Array.isArray(errorData.errors)) {
+          // Etsy sometimes returns errors as an array
+          const errorMessages = errorData.errors.map((e: any) => 
+            e.message || e.error || JSON.stringify(e)
+          ).join('; ')
+          errorMessage = errorMessages || errorMessage
+        } else if (typeof errorData.error === 'object' && errorData.error !== null) {
+          // Error might be an object with nested details
+          if (errorData.error.message) {
+            errorMessage = errorData.error.message
+          } else if (errorData.error.error) {
+            errorMessage = errorData.error.error
+          } else {
+            errorMessage = JSON.stringify(errorData.error)
+          }
+        }
+        
+        // Include additional context if available
+        if (errorData.params) {
+          errorMessage += ` (params: ${JSON.stringify(errorData.params)})`
+        }
+        
+        throw new Error(errorMessage)
       }
       
       return response
@@ -78,7 +120,7 @@ export async function makeEtsyRequest(
       // Network error or fetch failed
       if (attempt < retries && isRetryableError(error)) {
         const delay = RETRY_DELAY_BASE * Math.pow(2, attempt)
-        console.log(`Network error, retrying in ${delay}ms... (attempt ${attempt + 1}/${retries + 1})`)
+        logger.log(`Network error, retrying in ${delay}ms... (attempt ${attempt + 1}/${retries + 1})`)
         await new Promise(resolve => setTimeout(resolve, delay))
         continue
       }
@@ -161,6 +203,8 @@ export interface Listing {
   price: Price
   has_variations: boolean
   inventory: Inventory
+  taxonomy_id?: number // Taxonomy ID for the listing category
+  shipping_profile_id?: number // Shipping profile ID (required for physical listings)
 }
 
 // Listings Response type

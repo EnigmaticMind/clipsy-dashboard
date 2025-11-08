@@ -75,8 +75,8 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
     throw new Error('Could not find header row in CSV')
   }
 
-  // New CSV format has 24 columns
-  const minColumns = 24
+  // New CSV format has 22 columns
+  const minColumns = 22
 
   const listings: ProcessedListing[] = []
   let currentListing: ProcessedListing | null = null
@@ -101,12 +101,12 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
       }
     }
 
-    // New CSV structure (24 columns):
+    // New CSV structure (22 columns):
     // 0: Listing ID, 1: Title, 2: Description, 3: Status, 4: Tags,
     // 5: Variation, 6: Property Name 1, 7: Property Option 1, 8: Property Name 2, 9: Property Option 2,
     // 10: Price, 11: Currency Code, 12: Quantity, 13: SKU,
-    // 14: Variation Price, 15: Variation Quantity, 16: Variation SKU, 17: Variation Enabled,
-    // 18: Product ID, 19: Property ID 1, 20: Property Option IDs 1, 21: Property ID 2, 22: Property Option IDs 2, 23: Property Product ID
+    // 14: Variation Price, 15: Variation Quantity, 16: Variation SKU,
+    // 17: Product ID, 18: Property ID 1, 19: Property Option IDs 1, 20: Property ID 2, 21: Property Option IDs 2
 
     const row = {
       listingID: safeGet(record, 0),
@@ -126,13 +126,11 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
       variationPrice: safeGet(record, 14),
       variationQuantity: safeGet(record, 15),
       variationSKU: safeGet(record, 16),
-      variationEnabled: safeGet(record, 17),
-      productID: safeGet(record, 18),
-      propertyID1: safeGet(record, 19),
-      propertyOptionIDs1: safeGet(record, 20),
-      propertyID2: safeGet(record, 21),
-      propertyOptionIDs2: safeGet(record, 22),
-      propertyProductID: safeGet(record, 23),
+      productID: safeGet(record, 17),
+      propertyID1: safeGet(record, 18),
+      propertyOptionIDs1: safeGet(record, 19),
+      propertyID2: safeGet(record, 20),
+      propertyOptionIDs2: safeGet(record, 21),
     }
 
     // Determine if this is a new listing row
@@ -245,12 +243,10 @@ function parseVariation(row: {
   variationPrice: string
   variationQuantity: string
   variationSKU: string
-  variationEnabled: string
   propertyID1: string
   propertyOptionIDs1: string
   propertyID2: string
   propertyOptionIDs2: string
-  propertyProductID: string
   productID: string
 }): ProcessedVariation {
   const variation: ProcessedVariation = {
@@ -266,7 +262,7 @@ function parseVariation(row: {
     propertyPrice: row.variationPrice
       ? parseFloat(row.variationPrice) || null
       : null,
-    propertyIsEnabled: row.variationEnabled.toUpperCase() === 'TRUE',
+    propertyIsEnabled: true, // Default to enabled (column removed from CSV)
     propertyID1: parseInt(row.propertyID1, 10) || 0,
     propertyOptionIDs1: row.propertyOptionIDs1
       ? row.propertyOptionIDs1
@@ -284,15 +280,8 @@ function parseVariation(row: {
     toDelete: row.variationSKU.toUpperCase() === 'DELETE',
   }
 
-  // Parse Product ID (from Property Product ID column or Product ID column)
-  if (row.propertyProductID !== '') {
-    const id = parseInt(row.propertyProductID, 10)
-    if (!isNaN(id)) {
-      variation.productID = id
-    }
-  }
-  // Also check Product ID column
-  if (variation.productID === 0 && row.productID !== '') {
+  // Parse Product ID from Product ID column
+  if (row.productID !== '') {
     const id = parseInt(row.productID, 10)
     if (!isNaN(id)) {
       variation.productID = id

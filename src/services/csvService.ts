@@ -24,8 +24,8 @@ function decodeHTMLEntities(s: string): string {
 export function convertListingsToCSV(listings: ListingsResponse): string {
   const rows: string[][] = []
   
-  // Metadata rows (24 columns total)
-  const emptyRow = Array(24).fill('')
+  // Metadata rows (22 columns total)
+  const emptyRow = Array(22).fill('')
   
   rows.push([
     'INFO: This CSV contains your Etsy listings. For listings with variations, each variation appears on a separate row. Listing-level fields (Title, Description, Status, Tags) are only on the first row.',
@@ -33,7 +33,7 @@ export function convertListingsToCSV(listings: ListingsResponse): string {
   ])
   
   rows.push([
-    'IMPORTANT: When uploading edits, keep Listing ID, Product ID, Property IDs, and Property Option IDs intact. They identify which items to update.',
+    'IMPORTANT: When uploading edits, keep Listing ID, Product ID, Property IDs intact. They identify which items to update.',
     ...emptyRow.slice(1)
   ])
   
@@ -44,21 +44,6 @@ export function convertListingsToCSV(listings: ListingsResponse): string {
   
   rows.push([
     'UPLOAD BEHAVIOR: New records (no Listing ID) = Create new listing. Existing records (has Listing ID) = Update listing.',
-    ...emptyRow.slice(1)
-  ])
-  
-  rows.push([
-    'EDITING TIP: For listings with variations, edit Title/Description/Status/Tags on the first row only. Variation rows have these fields empty to avoid confusion.',
-    ...emptyRow.slice(1)
-  ])
-  
-  rows.push([
-    'DO NOT EDIT: Variation Enabled, Product ID, Property ID 1/2, Property Option IDs 1/2, Property Product ID - These are technical fields used for identification.',
-    ...emptyRow.slice(1)
-  ])
-  
-  rows.push([
-    'COLUMN GROUPS: [Listing Info (5 cols)] [Variation Display (5 cols)] [Pricing & Inventory (4 cols)] [Variation Details (4 cols)] [Technical IDs - DO NOT EDIT (6 cols)]',
     ...emptyRow.slice(1)
   ])
   
@@ -84,13 +69,11 @@ export function convertListingsToCSV(listings: ListingsResponse): string {
     'Variation Price',  // If price varies by variation
     'Variation Quantity',  // If quantity varies by variation
     'Variation SKU (DELETE=delete variation)',  // If SKU varies by variation
-    'Variation Enabled (DO NOT EDIT)',
     'Product ID (DO NOT EDIT)',
     'Property ID 1 (DO NOT EDIT)',
     'Property Option IDs 1 (DO NOT EDIT)',
     'Property ID 2 (DO NOT EDIT)',
     'Property Option IDs 2 (DO NOT EDIT)',
-    'Property Product ID (DO NOT EDIT)',  // For backward compatibility
   ])
   
   // Process each listing
@@ -181,13 +164,11 @@ export function convertListingsToCSV(listings: ListingsResponse): string {
           variationPrice,  // Variation Price (if price on property)
           variationQuantity,  // Variation Quantity (if quantity on property)
           variationSKU,  // Variation SKU (if SKU on property)
-          activeOffering.is_enabled ? 'true' : 'false',
           product.product_id.toString(),
           prop1 ? prop1.property_id.toString() : '',
           prop1 ? prop1.value_ids.join(',') : '',
           prop2 ? prop2.property_id.toString() : '',
           prop2 ? prop2.value_ids.join(',') : '',
-          product.product_id.toString(),  // Property Product ID (for backward compatibility)
         ]
         
         rows.push(row)
@@ -238,10 +219,8 @@ export function convertListingsToCSV(listings: ListingsResponse): string {
         quantity,
         sku,
         '', '', '',  // No variation price/quantity/SKU
-        'true',  // Enabled
         productID,
         '', '', '', '',  // No property IDs
-        productID,  // Property Product ID (for backward compatibility)
       ])
     }
   }
