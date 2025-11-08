@@ -1,0 +1,51 @@
+name: Deploy to Chrome Web Store
+
+on:
+  push:
+    tags:
+      - "v*" # Trigger on version tags like v1.0.0
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Create zip file
+        run: |
+          cd dist
+          zip -r ../clipsy-extension.zip . -x "*.map" "*.DS_Store" "*.log"
+          cd ..
+          ls -lh clipsy-extension.zip
+
+      - name: Upload to Chrome Web Store
+        uses: Foxycorp/upload-chrome-extension@v1
+        with:
+          extension-id: ${{ secrets.CHROME_EXTENSION_ID }}
+          client-id: ${{ secrets.CHROME_CLIENT_ID }}
+          client-secret: ${{ secrets.CHROME_CLIENT_SECRET }}
+          refresh-token: ${{ secrets.CHROME_REFRESH_TOKEN }}
+          zip-file: ./clipsy-extension.zip
+          publish: false # Set to true to auto-publish, false to submit for review
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipsy-extension
+          path: clipsy-extension.zip
+          retention-days: 30
