@@ -643,7 +643,7 @@ export async function updateListingInventory(
       const offering: any = {
         price: 0, // Default price as float (inventory endpoint expects float)
         quantity: 0,
-        is_enabled: variation.propertyIsEnabled,
+        is_enabled: true, // Always enabled
       }
 
       // Get readiness_state_id from existing product if updating, or from first existing offering, or use default

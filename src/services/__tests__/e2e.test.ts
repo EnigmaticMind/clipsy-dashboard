@@ -85,7 +85,6 @@ function createTestVariation(
     propertySKU: sku || '',
     propertyQuantity: quantity || null,
     propertyPrice: price || null,
-    propertyIsEnabled: true,
     propertyID1: propertyInfo.propertyID1,
     propertyOptionIDs1: [propertyInfo.valueID1],
     propertyID2: propertyInfo.propertyID2 || 0,
@@ -616,7 +615,6 @@ describe('E2E Tests - Real Etsy API', () => {
             propertySKU: p.sku,
             propertyQuantity: p.offerings[0]?.quantity || null,
             propertyPrice: p.offerings[0] ? p.offerings[0].price.amount / p.offerings[0].price.divisor : null,
-            propertyIsEnabled: p.offerings[0]?.is_enabled || true,
             propertyID1: p.property_values[0]?.property_id || 0,
             propertyOptionIDs1: p.property_values[0]?.value_ids || [],
             propertyID2: p.property_values[1]?.property_id || 0,
@@ -659,7 +657,6 @@ describe('E2E Tests - Real Etsy API', () => {
           propertySKU: p.sku,
           propertyQuantity: p.offerings[0]?.quantity || null,
           propertyPrice: isFirst ? 30.99 : (p.offerings[0] ? p.offerings[0].price.amount / p.offerings[0].price.divisor : null),
-          propertyIsEnabled: p.offerings[0]?.is_enabled || true,
           propertyID1: p.property_values[0]?.property_id || 0,
           propertyOptionIDs1: p.property_values[0]?.value_ids || [],
           propertyID2: p.property_values[1]?.property_id || 0,
@@ -868,7 +865,6 @@ describe('E2E Tests - Real Etsy API', () => {
             propertySKU: p.sku,
             propertyQuantity: p.offerings[0]?.quantity || null,
             propertyPrice: p.offerings[0] ? p.offerings[0].price.amount / p.offerings[0].price.divisor : null,
-            propertyIsEnabled: p.offerings[0]?.is_enabled || true,
             propertyID1: p.property_values[0]?.property_id || 0,
             propertyOptionIDs1: p.property_values[0]?.value_ids || [],
             propertyID2: p.property_values[1]?.property_id || 0,
@@ -899,9 +895,11 @@ describe('E2E Tests - Real Etsy API', () => {
       const propID1 = propertyInfo.propertyID1
       const propID2 = propertyInfo.propertyID2
       
-      const largeBlueProduct = activeProducts.find(p => {
-        const prop1 = p.property_values.find((pv: any) => pv.property_id === propID1)
-        const prop2 = p.property_values.find((pv: any) => pv.property_id === propID2)
+          const largeBlueProduct = activeProducts.find(p => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const prop1 = p.property_values.find((pv: any) => pv.property_id === propID1)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const prop2 = p.property_values.find((pv: any) => pv.property_id === propID2)
         return prop1?.value_ids.includes(largeValueID) && 
                prop2?.value_ids.includes(valueID2_2 ?? 0) &&
                !createdListing.inventory.products.some((ep: any) => ep.product_id === p.product_id) // Not in original listing
@@ -909,7 +907,8 @@ describe('E2E Tests - Real Etsy API', () => {
       
       expect(largeBlueProduct).toBeDefined()
       if (largeBlueProduct) {
-        const offering = largeBlueProduct.offerings.find((o: any) => !o.is_deleted)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const offering = largeBlueProduct.offerings.find((o: any) => !o.is_deleted)
         expect(offering).toBeDefined()
         // The auto-generated combination should be disabled
         expect(offering?.is_enabled).toBe(false)
@@ -1035,7 +1034,6 @@ describe('E2E Tests - Real Etsy API', () => {
         propertySKU: `E2E-SKU-NOVID-NEW-${Date.now()}`,
         propertyQuantity: 10,
         propertyPrice: 18.99,
-        propertyIsEnabled: true,
         propertyID1: propertyInfo.propertyID1, // We have the property ID
         propertyOptionIDs1: [], // But no value IDs (empty array simulates not found)
         propertyID2: propertyInfo.propertyID2 || 0,
@@ -1066,7 +1064,6 @@ describe('E2E Tests - Real Etsy API', () => {
             propertySKU: p.sku,
             propertyQuantity: p.offerings[0]?.quantity || null,
             propertyPrice: p.offerings[0] ? p.offerings[0].price.amount / p.offerings[0].price.divisor : null,
-            propertyIsEnabled: p.offerings[0]?.is_enabled || true,
             propertyID1: p.property_values[0]?.property_id || 0,
             propertyOptionIDs1: p.property_values[0]?.value_ids || [],
             propertyID2: p.property_values[1]?.property_id || 0,
@@ -1111,14 +1108,17 @@ describe('E2E Tests - Real Etsy API', () => {
         // If it was created, verify it exists
         if (xl3RedProduct) {
           expect(xl3RedProduct).toBeDefined()
-          const offering = xl3RedProduct.offerings.find((o: any) => !o.is_deleted)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const offering = xl3RedProduct.offerings.find((o: any) => !o.is_deleted)
           expect(offering).toBeDefined()
         }
         
         // Look for auto-generated 3XL/Blue (should be created with is_enabled: false)
-        const xl3BlueProduct = activeProducts.find(p => {
-          const prop1 = p.property_values.find((pv: any) => pv.property_id === propID1)
-          const prop2 = p.property_values.find((pv: any) => pv.property_id === propID2)
+            const xl3BlueProduct = activeProducts.find(p => {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const prop1 = p.property_values.find((pv: any) => pv.property_id === propID1)
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const prop2 = p.property_values.find((pv: any) => pv.property_id === propID2)
           const has3XL = prop1?.values?.some((v: string) => v.toLowerCase() === '3xl') || 
                         prop1?.value_ids?.length === 0
           return has3XL && 
@@ -1128,7 +1128,8 @@ describe('E2E Tests - Real Etsy API', () => {
         
         // If auto-generated combination exists, it should be disabled
         if (xl3BlueProduct) {
-          const offering = xl3BlueProduct.offerings.find((o: any) => !o.is_deleted)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const offering = xl3BlueProduct.offerings.find((o: any) => !o.is_deleted)
           if (offering) {
             // Auto-generated combinations should be disabled
             expect(offering.is_enabled).toBe(false)
@@ -1164,7 +1165,6 @@ describe('E2E Tests - Real Etsy API', () => {
         propertySKU: p.sku,
         propertyQuantity: p.offerings[0]?.quantity || null,
         propertyPrice: p.offerings[0] ? p.offerings[0].price.amount / p.offerings[0].price.divisor : null,
-        propertyIsEnabled: p.offerings[0]?.is_enabled || true,
         propertyID1: p.property_values[0]?.property_id || 0,
         propertyOptionIDs1: p.property_values[0]?.value_ids || [],
         propertyID2: p.property_values[1]?.property_id || 0,

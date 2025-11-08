@@ -3,20 +3,55 @@
 
 import { ListingsResponse } from './etsyApi'
 
-// Decode HTML entities
+// Decode HTML entities (works in service workers without DOM)
 function decodeHTMLEntities(s: string): string {
-  // Create a temporary element to decode HTML entities
-  const textarea = document.createElement('textarea')
-  textarea.innerHTML = s
-  let decoded = textarea.value
+  if (!s) return s;
   
-  // Handle numeric entities like &#39;
+  // Common HTML entities mapping
+  const entityMap: Record<string, string> = {
+    '&amp;': '&',
+    '&lt;': '<',
+    '&gt;': '>',
+    '&quot;': '"',
+    '&#39;': "'",
+    '&apos;': "'",
+    '&nbsp;': ' ',
+    '&copy;': '©',
+    '&reg;': '®',
+    '&trade;': '™',
+  };
+  
+  let decoded = s;
+  
+  // Replace named entities
+  for (const [entity, char] of Object.entries(entityMap)) {
+    decoded = decoded.replace(new RegExp(entity, 'g'), char);
+  }
+  
+  // Handle numeric entities like &#39; or &#x27;
   decoded = decoded.replace(/&#(\d+);/g, (_match, numStr) => {
-    const num = parseInt(numStr, 10)
-    return String.fromCharCode(num)
-  })
+    const num = parseInt(numStr, 10);
+    return String.fromCharCode(num);
+  });
   
-  return decoded
+  // Handle hex entities like &#x27;
+  decoded = decoded.replace(/&#x([0-9a-fA-F]+);/g, (_match, hexStr) => {
+    const num = parseInt(hexStr, 16);
+    return String.fromCharCode(num);
+  });
+  
+  // If document is available (not in service worker), use it as fallback for complex entities
+  if (typeof document !== 'undefined') {
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.innerHTML = decoded;
+      decoded = textarea.value;
+    } catch {
+      // If document.createElement fails, use the decoded string as-is
+    }
+  }
+  
+  return decoded;
 }
 
 // Convert listings to CSV format

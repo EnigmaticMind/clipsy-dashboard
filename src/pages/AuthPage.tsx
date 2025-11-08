@@ -50,6 +50,7 @@ export default function AuthPage() {
     };
 
     handleAuth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navigate]);
 
   return (

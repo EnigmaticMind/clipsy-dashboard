@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import LoadingSpinner from "../components/LoadingSpinner";
 import UploadPreview from "../components/UploadPreview";
 import { useToast } from "../contexts/ToastContext";
+import { logger } from "../utils/logger";
 import {
   checkAuthStatus,
   initOAuthFlow,
@@ -40,6 +41,61 @@ export default function DownloadUploadPage() {
     };
 
     checkAuth();
+  }, []);
+
+  // Check for pending bulk edit CSV and auto-trigger preview
+  useEffect(() => {
+    const checkPendingBulkEdit = async () => {
+      try {
+        const result = await chrome.storage.local.get([
+          "clipsy_pending_bulk_edit",
+        ]);
+        const pendingEdit = result.clipsy_pending_bulk_edit;
+
+        if (pendingEdit && pendingEdit.csvContent) {
+          // Clear the pending edit
+          await chrome.storage.local.remove(["clipsy_pending_bulk_edit"]);
+
+          // Create a File object from the CSV content
+          const blob = new Blob([pendingEdit.csvContent], {
+            type: "text/csv;charset=utf-8;",
+          });
+          const csvFile = new File(
+            [blob],
+            pendingEdit.filename || "bulk-edit.csv",
+            { type: "text/csv" }
+          );
+
+          // Trigger the preview flow
+          setIsLoading(true);
+          setLoadingMessage("Analyzing bulk edit changes...");
+
+          try {
+            const preview = await previewUploadCSV(csvFile);
+            setIsLoading(false);
+            setLoadingMessage("");
+            setPreviewData(preview);
+            setPreviewFile(csvFile);
+          } catch (error) {
+            logger.error("Bulk edit preview error:", error);
+            setIsLoading(false);
+            setLoadingMessage("");
+            if (error instanceof Error) {
+              toast.showError(`Failed to analyze bulk edit: ${error.message}`);
+            } else {
+              toast.showError("Failed to analyze bulk edit. Please try again.");
+            }
+          }
+        }
+      } catch (error) {
+        logger.error("Error checking pending bulk edit:", error);
+      }
+    };
+
+    // Check after a short delay to ensure component is mounted
+    const timeoutId = setTimeout(checkPendingBulkEdit, 500);
+    return () => clearTimeout(timeoutId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleDownload = async () => {
@@ -145,7 +201,7 @@ export default function DownloadUploadPage() {
         if (!preview.changes || preview.changes.length === 0) {
           setIsLoading(false);
           setLoadingMessage("");
-          console.info("No changes found in the CSV file:", preview);
+          // No changes found in the CSV file
           toast.showInfo(
             "No changes found in the CSV file. Please try again with a different file."
           );

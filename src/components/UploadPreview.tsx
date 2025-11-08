@@ -5,8 +5,8 @@ import { highlightBefore, highlightAfter } from "../utils/textDiff";
 
 interface FieldChange {
   field: string;
-  before: any;
-  after: any;
+  before: string | number | null;
+  after: string | number | null;
   changeType: "modified" | "added" | "removed";
 }
 
@@ -168,7 +168,7 @@ export default function UploadPreview({
     );
   };
 
-  const formatValue = (value: any): string => {
+  const formatValue = (value: string | number | null | undefined): string => {
     if (value === null || value === undefined) return "(empty)";
     if (typeof value === "boolean") return value ? "Yes" : "No";
     return String(value);
@@ -521,9 +521,9 @@ interface ChangeItemProps {
   onToggleChange: (changeId: string) => void;
   onToggleExpand: (changeId: string) => void;
   getChangeTypeBadge: (type: string) => JSX.Element;
-  formatValue: (value: any) => string;
-  highlightBefore: (before: any, after: any) => React.ReactNode;
-  highlightAfter: (before: any, after: any) => React.ReactNode;
+  formatValue: (value: string | number | null | undefined) => string;
+  highlightBefore: (before: string | number | null, after: string | number | null) => React.ReactNode;
+  highlightAfter: (before: string | number | null, after: string | number | null) => React.ReactNode;
 }
 
 function ChangeItem({

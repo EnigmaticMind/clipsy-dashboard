@@ -27,7 +27,6 @@ export interface ProcessedVariation {
   propertySKU: string
   propertyQuantity: number | null
   propertyPrice: number | null
-  propertyIsEnabled: boolean
   propertyID1: number
   propertyOptionIDs1: number[]
   propertyID2: number
@@ -262,7 +261,6 @@ function parseVariation(row: {
     propertyPrice: row.variationPrice
       ? parseFloat(row.variationPrice) || null
       : null,
-    propertyIsEnabled: true, // Default to enabled (column removed from CSV)
     propertyID1: parseInt(row.propertyID1, 10) || 0,
     propertyOptionIDs1: row.propertyOptionIDs1
       ? row.propertyOptionIDs1

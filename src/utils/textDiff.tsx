@@ -111,8 +111,8 @@ export function highlightTextDiff(
  * Highlight differences for the "After" column - shows what's new
  */
 export function highlightAfter(
-  before: string | null | undefined,
-  after: string | null | undefined
+  before: string | number | null | undefined,
+  after: string | number | null | undefined
 ): React.ReactNode {
   const beforeText = before?.toString() || "";
   const afterText = after?.toString() || "";
@@ -188,8 +188,8 @@ export function highlightAfter(
  * Highlight differences for the "Before" column - shows what's being removed
  */
 export function highlightBefore(
-  before: string | null | undefined,
-  after: string | null | undefined
+  before: string | number | null | undefined,
+  after: string | number | null | undefined
 ): React.ReactNode {
   const beforeText = before?.toString() || "";
   const afterText = after?.toString() || "";

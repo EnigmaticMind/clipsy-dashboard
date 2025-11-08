@@ -257,7 +257,6 @@ describe('previewService', () => {
             propertySKU: 'SKU-S',
             propertyQuantity: 5,
             propertyPrice: 15.99,
-            propertyIsEnabled: true,
             propertyID1: 200,
             propertyOptionIDs1: [201],
             propertyID2: 0,

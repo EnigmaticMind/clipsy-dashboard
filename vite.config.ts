@@ -16,6 +16,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         dashboard: 'dashboard.html',
+        'content/etsyEditor': 'src/content/etsyEditor.ts',
       },
     },
   },

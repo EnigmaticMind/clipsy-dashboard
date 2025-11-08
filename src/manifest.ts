@@ -9,13 +9,35 @@ const EXTENSION_PUBLIC_KEY: string | undefined = process.env.EXTENSION_PUBLIC_KE
 import packageData from '../package.json';
 
 // Check if we're in development mode
-const isDev = (import.meta as any).env?.MODE === 'development';
+interface ImportMetaEnv {
+  MODE?: string;
+}
+
+interface ImportMeta {
+  env?: ImportMetaEnv;
+}
+
+const isDev = (import.meta as ImportMeta).env?.MODE === 'development';
 
 // Build manifest with optional key field
-const manifestConfig: any = {
-  name: `${(packageData as any).displayName || packageData.name}${isDev ? ` ➡️ Dev` : ''}`,
-  description: (packageData as any).description || 'Bulk edit and manage your Etsy listings with CSV import/export',
-  version: packageData.version,
+interface PackageData {
+  name: string;
+  version: string;
+  displayName?: string;
+  description?: string;
+}
+
+const packageDataTyped = packageData as PackageData;
+const manifestConfig: {
+  name: string;
+  description: string;
+  version: string;
+  manifest_version: number;
+  key?: string;
+} = {
+  name: `${packageDataTyped.displayName || packageDataTyped.name}${isDev ? ` ➡️ Dev` : ''}`,
+  description: packageDataTyped.description || 'Bulk edit and manage your Etsy listings with CSV import/export',
+  version: packageDataTyped.version,
   manifest_version: 3,
 }
 
@@ -54,6 +76,14 @@ export default defineManifest({
     'https://api.etsy.com/*',
     'https://openapi.etsy.com/*',
     'https://www.etsy.com/*',
+    'https://generativelanguage.googleapis.com/*',
+  ],
+  content_scripts: [
+    {
+      matches: ['https://www.etsy.com/your/shops/me/listing-editor/edit/*'],
+      js: ['src/content/etsyEditor.ts'],
+      run_at: 'document_idle',
+    },
   ],
   web_accessible_resources: [
     {

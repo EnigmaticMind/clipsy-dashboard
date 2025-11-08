@@ -13,7 +13,7 @@ import {
 } from "../services/oauth";
 import { getShopID, fetchListings, ListingStatus } from "../services/etsyApi";
 import { convertListingsToCSV, downloadCSV } from "../services/csvService";
-import { previewUploadCSV } from "../services/previewService";
+import { previewUploadCSV, type PreviewResponse } from "../services/previewService";
 import { applyUploadCSV } from "../services/applyService";
 import { createBackupCSV } from "../services/backupService";
 
@@ -24,7 +24,7 @@ export default function LandingPage() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [listingStatus, setListingStatus] = useState<string>("all");
-  const [previewData, setPreviewData] = useState<any>(null);
+  const [previewData, setPreviewData] = useState<PreviewResponse | null>(null);
   const [previewFile, setPreviewFile] = useState<File | null>(null);
   const [isApplying, setIsApplying] = useState(false);
 
@@ -43,6 +43,52 @@ export default function LandingPage() {
     };
 
     checkAuth();
+  }, []);
+
+  // Check for pending bulk edit CSV and auto-trigger preview
+  useEffect(() => {
+    const checkPendingBulkEdit = async () => {
+      try {
+        const result = await chrome.storage.local.get(['clipsy_pending_bulk_edit']);
+        const pendingEdit = result.clipsy_pending_bulk_edit;
+        
+        if (pendingEdit && pendingEdit.csvContent) {
+          // Clear the pending edit
+          await chrome.storage.local.remove(['clipsy_pending_bulk_edit']);
+          
+          // Create a File object from the CSV content
+          const blob = new Blob([pendingEdit.csvContent], { type: 'text/csv;charset=utf-8;' });
+          const csvFile = new File([blob], pendingEdit.filename || 'bulk-edit.csv', { type: 'text/csv' });
+          
+          // Trigger the preview flow
+          setIsLoading(true);
+          setLoadingMessage("Analyzing bulk edit changes...");
+          
+          try {
+            const preview = await previewUploadCSV(csvFile);
+            setIsLoading(false);
+            setLoadingMessage("");
+            setPreviewData(preview);
+            setPreviewFile(csvFile);
+          } catch (error) {
+            logger.error("Bulk edit preview error:", error);
+            setIsLoading(false);
+            setLoadingMessage("");
+            if (error instanceof Error) {
+              toast.showError(`Failed to analyze bulk edit: ${error.message}`);
+            } else {
+              toast.showError("Failed to analyze bulk edit. Please try again.");
+            }
+          }
+        }
+      } catch (error) {
+        logger.error("Error checking pending bulk edit:", error);
+      }
+    };
+
+    // Check after a short delay to ensure component is mounted
+    const timeoutId = setTimeout(checkPendingBulkEdit, 500);
+    return () => clearTimeout(timeoutId);
   }, []);
 
   const handleDownload = async () => {
