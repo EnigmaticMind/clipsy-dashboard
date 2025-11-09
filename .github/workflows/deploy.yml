@@ -111,9 +111,51 @@ jobs:
 
           echo "✅ Version updated to: $ACTUAL_VERSION (no pre-release identifiers)"
 
-      # Version is already updated in "Update code to match release version" step
-      # The build will use the updated version from package.json
-      # No need to commit/push since the tag already represents the release
+      - name: Commit and push version update
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          TAG_NAME="${{ steps.get_version.outputs.tag_name }}"
+
+          # Determine the branch to update
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # For manual dispatch, checkout the default branch
+            DEFAULT_BRANCH=$(git remote show origin | grep "HEAD branch" | cut -d' ' -f5 || echo "main")
+            BRANCH=${DEFAULT_BRANCH:-main}
+            echo "Manual trigger - using branch: $BRANCH"
+            git fetch origin $BRANCH
+            git checkout -B $BRANCH origin/$BRANCH || git checkout $BRANCH
+          else
+            # For tag push, determine the default branch
+            DEFAULT_BRANCH=$(git remote show origin | grep "HEAD branch" | cut -d' ' -f5 || echo "main")
+            BRANCH=${DEFAULT_BRANCH:-main}
+            echo "Tag push - using branch: $BRANCH"
+            git fetch origin $BRANCH
+            git checkout -B $BRANCH origin/$BRANCH || git checkout $BRANCH
+          fi
+
+          # Configure git
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+
+          # Add changed files
+          git add package.json src/manifest.ts 2>/dev/null || git add package.json
+
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No version changes to commit (already matches tag version)"
+          else
+            git commit -m "Update version to $VERSION to match tag $TAG_NAME" || echo "Commit failed"
+            
+            # Push to the branch
+            git push origin HEAD:$BRANCH || {
+              echo "⚠️  Warning: Push failed. This might be due to:"
+              echo "   1. Branch protection rules preventing direct pushes"
+              echo "   2. Repository settings not allowing GitHub Actions to push"
+              echo "   The version has been updated locally and will be used for the build"
+            }
+            echo "✅ Committed and pushed version update to $BRANCH"
+          fi
 
       - name: Set version output
         id: version
