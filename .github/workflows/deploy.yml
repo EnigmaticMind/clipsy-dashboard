@@ -54,67 +54,12 @@ jobs:
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
           echo "✅ Final cleaned version: $VERSION (from tag: $TAG_NAME)"
 
-      - name: Update code to match release version
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          VERSION="${{ steps.get_version.outputs.version }}"
-          echo "=== DEBUG: Starting version update ==="
-          echo "Tag: ${GITHUB_REF#refs/tags/}"
-          echo "Cleaned version from step: $VERSION"
-
-          # Show current version before update
-          CURRENT_VERSION=$(node -p "require('./package.json').version")
-          echo "Current package.json version: $CURRENT_VERSION"
-
-          # Force clean the version - strip everything after first hyphen
-          CLEAN_VERSION=$(echo "$VERSION" | cut -d'-' -f1)
-          echo "Force cleaned version: $CLEAN_VERSION"
-
-          # Update package.json with the cleaned version
-          node -e "
-            const fs = require('fs');
-            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            const oldVersion = pkg.version;
-            // Force strip any pre-release identifiers
-            const cleanVersion = '$CLEAN_VERSION'.split('-')[0].trim();
-            pkg.version = cleanVersion;
-            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-            console.log('Version updated from', oldVersion, 'to', cleanVersion);
-          "
-
-          # Verify the version was set correctly
-          ACTUAL_VERSION=$(node -p "require('./package.json').version")
-          echo "=== DEBUG: After update ==="
-          echo "Actual package.json version: $ACTUAL_VERSION"
-
-          # Show the actual file content to verify
-          echo "=== package.json version field ==="
-          grep -A 1 '"version"' package.json
-
-          # Double-check - if it still has a hyphen, something is wrong
-          if [[ "$ACTUAL_VERSION" == *"-"* ]]; then
-            echo "❌ CRITICAL ERROR: Version still contains pre-release identifier: $ACTUAL_VERSION"
-            echo "Attempting to fix by force-stripping..."
-            node -e "
-              const fs = require('fs');
-              const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-              pkg.version = pkg.version.split('-')[0];
-              fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-            "
-            ACTUAL_VERSION=$(node -p "require('./package.json').version")
-            echo "After force fix: $ACTUAL_VERSION"
-            if [[ "$ACTUAL_VERSION" == *"-"* ]]; then
-              echo "❌ Failed to fix version. Aborting."
-              exit 1
-            fi
-          fi
-
-          echo "✅ Version updated to: $ACTUAL_VERSION (no pre-release identifiers)"
-
       - name: Commit and push version update
         run: |
           VERSION="${{ steps.get_version.outputs.version }}"
           TAG_NAME="${{ steps.get_version.outputs.tag_name }}"
+          echo "=== DEBUG: Starting version update ==="
+          echo "Cleaned version from step: $VERSION"
 
           # Determine the branch to update
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
