@@ -108,6 +108,17 @@ function uploadExtension(accessToken) {
           return;
         }
         const response = JSON.parse(data);
+        
+        // Check for uploadState: 'FAILURE' in response body
+        if (response.uploadState === 'FAILURE') {
+          const errors = response.itemError || [];
+          const errorMessages = errors.map(err => 
+            `${err.error_code}: ${err.error_detail || err.error_message || 'Unknown error'}`
+          ).join('\n');
+          reject(new Error(`Chrome Web Store upload failed:\n${errorMessages}`));
+          return;
+        }
+        
         console.log('Upload successful:', response);
         resolve(response);
       });
