@@ -100,9 +100,8 @@ jobs:
           BRANCH=${DEFAULT_BRANCH:-main}
           echo "Using branch: $BRANCH"
 
-          # Configure git to use the token
+          # Configure git to use the token BEFORE any git operations
           git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-            
 
           # Checkout the default branch (not the tag)
           git fetch origin $BRANCH
@@ -119,10 +118,20 @@ jobs:
             TAG_NAME="${GITHUB_REF#refs/tags/}"
             git commit -m "Update version to $VERSION to match tag $TAG_NAME" || echo "Commit failed"
             
-            
-            # Push to the branch
-            git push
-            echo "✅ Committed and pushed version update to $BRANCH"
+            # Push to the branch explicitly
+            git push origin HEAD:$BRANCH || {
+              echo "⚠️  Warning: Push failed. This might be due to:"
+              echo "   1. Branch protection rules preventing direct pushes"
+              echo "   2. Repository settings not allowing GitHub Actions to push"
+              echo "   3. The version update has been made locally and will be used for the build"
+              echo ""
+              echo "To fix this, check:"
+              echo "   - Repository Settings → Actions → General → Workflow permissions"
+              echo "   - Repository Settings → Branches → Branch protection rules"
+              echo ""
+              echo "The build will continue with the updated version."
+            }
+            echo "✅ Version update completed"
           fi
 
       - name: Set version output
