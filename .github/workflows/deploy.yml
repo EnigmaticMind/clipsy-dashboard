@@ -10,7 +10,10 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Required to push version updates back to the repo
+      contents: write
+      pull-requests: write
+      issues: read
+      packages: none
 
     steps:
       - name: Checkout code
@@ -18,8 +21,6 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-          persist-credentials: true # This makes the token available for git push
-          ref: ${{ github.ref }} # Use the tag ref
 
       - name: Get version from tag
         id: get_version
