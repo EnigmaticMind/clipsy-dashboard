@@ -18,6 +18,7 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true # This makes the token available for git push
           ref: ${{ github.event.release.target_commitish || github.ref }}
 
       - name: Get version from release tag
@@ -100,7 +101,8 @@ jobs:
             echo "No version changes to commit (already matches release version)"
           else
             git commit -m "Update version to $VERSION to match release ${{ github.event.release.tag_name }}" || echo "Commit failed"
-            git push origin HEAD:$BRANCH || echo "Push failed"
+            # Use the GITHUB_TOKEN explicitly for push
+            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:$BRANCH || echo "Push failed"
             echo "✅ Committed and pushed version update to $BRANCH"
           fi
 
