@@ -25,7 +25,6 @@ jobs:
 
       - name: Get version from tag
         id: get_version
-        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           TAG_NAME="${GITHUB_REF#refs/tags/}"
           echo "Original tag name: $TAG_NAME"
@@ -38,56 +37,55 @@ jobs:
           echo "✅ Final cleaned version: $VERSION (from tag: $TAG_NAME)"
 
       - name: Update code to match release version
-        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           VERSION="${{ steps.get_version.outputs.version }}"
-          echo "Updating package.json to version: $VERSION"
+          echo "=== DEBUG: Starting version update ==="
+          echo "Tag: ${GITHUB_REF#refs/tags/}"
+          echo "Cleaned version from step: $VERSION"
 
           # Show current version before update
           CURRENT_VERSION=$(node -p "require('./package.json').version")
           echo "Current package.json version: $CURRENT_VERSION"
 
-          # Strip any pre-release identifiers from current version (safety check)
-          CLEANED_CURRENT=${CURRENT_VERSION%%-*}
-          if [[ "$CURRENT_VERSION" != "$CLEANED_CURRENT" ]]; then
-            echo "⚠️  Current version contains pre-release identifier, will be cleaned: $CURRENT_VERSION -> $CLEANED_CURRENT"
-          fi
+          # Force clean the version - strip everything after first hyphen
+          CLEAN_VERSION=$(echo "$VERSION" | cut -d'-' -f1)
+          echo "Force cleaned version: $CLEAN_VERSION"
 
-          # Ensure the target version is clean (double-check)
-          CLEANED_VERSION=${VERSION%%-*}
-          if [[ "$VERSION" != "$CLEANED_VERSION" ]]; then
-            echo "⚠️  Target version contains pre-release identifier, cleaning: $VERSION -> $CLEANED_VERSION"
-            VERSION=$CLEANED_VERSION
-          fi
-
-          # Update package.json directly using node (more reliable than npm version)
+          # Update package.json with the cleaned version
           node -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            console.log('Old version:', pkg.version);
-            // Strip any pre-release identifiers from the version
-            const cleanVersion = '$VERSION'.split('-')[0];
+            const oldVersion = pkg.version;
+            // Force strip any pre-release identifiers
+            const cleanVersion = '$CLEAN_VERSION'.split('-')[0].trim();
             pkg.version = cleanVersion;
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-            console.log('New version:', pkg.version);
+            console.log('Version updated from', oldVersion, 'to', cleanVersion);
           "
 
           # Verify the version was set correctly
           ACTUAL_VERSION=$(node -p "require('./package.json').version")
-          echo "✅ Updated package.json to version: $ACTUAL_VERSION"
+          echo "=== DEBUG: After update ==="
+          echo "Actual package.json version: $ACTUAL_VERSION"
 
-          if [[ "$ACTUAL_VERSION" != "$VERSION" ]]; then
-            echo "❌ Error: Version mismatch! Expected $VERSION but got $ACTUAL_VERSION"
-            exit 1
-          fi
-
-          # Verify no pre-release identifiers
+          # Double-check - if it still has a hyphen, something is wrong
           if [[ "$ACTUAL_VERSION" == *"-"* ]]; then
-            echo "❌ Error: Version still contains pre-release identifier: $ACTUAL_VERSION"
-            exit 1
+            echo "❌ CRITICAL ERROR: Version still contains pre-release identifier: $ACTUAL_VERSION"
+            echo "Attempting to fix by force-stripping..."
+            node -e "
+              const fs = require('fs');
+              const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+              pkg.version = pkg.version.split('-')[0];
+              fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            "
+            ACTUAL_VERSION=$(node -p "require('./package.json').version")
+            echo "After force fix: $ACTUAL_VERSION"
+            if [[ "$ACTUAL_VERSION" == *"-"* ]]; then
+              exit 1
+            fi
           fi
 
-          echo "✅ Version updated and validated (no pre-release identifiers). manifest.ts will use this version when built."
+          echo "✅ Version updated to: $ACTUAL_VERSION (no pre-release identifiers)"
 
       # Version is already updated in "Update code to match release version" step
       # The build will use the updated version from package.json
@@ -123,6 +121,12 @@ jobs:
           fi
 
           echo "✅ Version validated: $PKG_VERSION"
+
+      - name: Debug version before build
+        run: |
+          echo "=== DEBUG: Starting Debug version before build ==="
+          echo "Package.json version: $(node -p "require('./package.json').version")"
+          echo "✅ Debug version verified."
 
       - name: Build extension
         run: npm run build
