@@ -112,7 +112,6 @@ jobs:
         run: npm ci
 
       - name: Verify version before build
-        if: github.event_name == 'release'
         run: |
           PKG_VERSION=$(node -p "require('./package.json').version")
           echo "Package.json version before build: $PKG_VERSION"
@@ -129,7 +128,6 @@ jobs:
         run: npm run build
 
       - name: Verify manifest version after build
-        if: github.event_name == 'release'
         run: |
           # Extract version from built manifest.json
           if [ -f "dist/manifest.json" ]; then
