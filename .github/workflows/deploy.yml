@@ -8,6 +8,9 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to push version updates back to the repo
+      id-token: read # Required for OIDC if using it
 
     steps:
       - name: Checkout code
@@ -41,12 +44,27 @@ jobs:
           CURRENT_VERSION=$(node -p "require('./package.json').version")
           echo "Current package.json version: $CURRENT_VERSION"
 
+          # Strip any pre-release identifiers from current version (safety check)
+          CLEANED_CURRENT=${CURRENT_VERSION%%-*}
+          if [[ "$CURRENT_VERSION" != "$CLEANED_CURRENT" ]]; then
+            echo "⚠️  Current version contains pre-release identifier, will be cleaned: $CURRENT_VERSION -> $CLEANED_CURRENT"
+          fi
+
+          # Ensure the target version is clean (double-check)
+          CLEANED_VERSION=${VERSION%%-*}
+          if [[ "$VERSION" != "$CLEANED_VERSION" ]]; then
+            echo "⚠️  Target version contains pre-release identifier, cleaning: $VERSION -> $CLEANED_VERSION"
+            VERSION=$CLEANED_VERSION
+          fi
+
           # Update package.json directly using node (more reliable than npm version)
           node -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
             console.log('Old version:', pkg.version);
-            pkg.version = '$VERSION';
+            // Strip any pre-release identifiers from the version
+            const cleanVersion = '$VERSION'.split('-')[0];
+            pkg.version = cleanVersion;
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
             console.log('New version:', pkg.version);
           "
@@ -66,7 +84,7 @@ jobs:
             exit 1
           fi
 
-          echo "✅ Version updated and validated. manifest.ts will use this version when built."
+          echo "✅ Version updated and validated (no pre-release identifiers). manifest.ts will use this version when built."
 
       - name: Commit version update
         if: github.event_name == 'release'
