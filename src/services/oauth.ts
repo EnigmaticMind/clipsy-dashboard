@@ -22,7 +22,7 @@ function getRedirectURL(): string {
   // 4. AuthPage can read the code/state from query params
   if (typeof chrome !== 'undefined' && chrome.identity && chrome.identity.getRedirectURL) {
     // Get base redirect URL and append dashboard.html#/auth
-    const redirectURL = chrome.identity.getRedirectURL('dashboard.html#/auth')
+    const redirectURL = chrome.identity.getRedirectURL('dashboard.html')
     logger.log('Chrome extension redirect URL:', redirectURL)
     return redirectURL
   }
@@ -156,7 +156,7 @@ export async function initOAuthFlow(): Promise<{ authUrl: string; state: string;
           // https://<extension-id>.chromiumapp.org/dashboard.html?code=...&state=...#/auth
           // (or just the base URL with query params if we didn't include dashboard.html#/auth)
           const url = new URL(redirectUrl)
-          const urlSearchParams = new URLSearchParams(url.hash.substring(url.hash.indexOf("?")))
+          const urlSearchParams = url.searchParams  // Query params are in search, not hash
           logger.log('Parsed URL search params:', url.search)
           logger.log('URL search params entries:', Array.from(url.searchParams.entries()))
           

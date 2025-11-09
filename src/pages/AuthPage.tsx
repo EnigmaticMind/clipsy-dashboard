@@ -15,10 +15,18 @@ export default function AuthPage() {
   useEffect(() => {
     const handleAuth = async () => {
       try {
-        // Get code and state from URL
-        const urlParams = new URLSearchParams(location.hash.split("?")[1]);
+        // Get code and state from URL hash (HashRouter puts query params in hash)
+        const hash = window.location.hash;
+        const queryString = hash.includes("?") ? hash.split("?")[1] : "";
+        const urlParams = new URLSearchParams(queryString);
         const code = urlParams.get("code");
         const state = urlParams.get("state");
+        const error = urlParams.get("error");
+        const errorDescription = urlParams.get("error_description");
+
+        if (error) {
+          throw new Error(errorDescription || error);
+        }
 
         if (!code || !state) {
           throw new Error("Missing authorization code or state parameter");
