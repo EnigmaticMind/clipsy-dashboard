@@ -58,8 +58,7 @@ jobs:
         run: |
           VERSION="${{ steps.get_version.outputs.version }}"
           TAG_NAME="${{ steps.get_version.outputs.tag_name }}"
-          echo "=== DEBUG: Starting version update ==="
-          echo "Cleaned version from step: $VERSION"
+          echo "=== Updating versions to: $VERSION ==="
 
           # Determine the branch to update
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
@@ -76,6 +75,33 @@ jobs:
             echo "Tag push - using branch: $BRANCH"
             git fetch origin $BRANCH
             git checkout -B $BRANCH origin/$BRANCH || git checkout $BRANCH
+          fi
+
+          # Update package.json with the cleaned version
+          echo "Updating package.json to version: $VERSION"
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const oldVersion = pkg.version;
+            pkg.version = '$VERSION';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            console.log('Updated package.json from', oldVersion, 'to', '$VERSION');
+          "
+
+          # Update manifest.ts - since it reads from package.json, we could skip this,
+          # but updating it explicitly ensures consistency
+          if [ -f "src/manifest.ts" ]; then
+            echo "Note: manifest.ts reads from package.json at build time, so it will automatically use version $VERSION"
+          fi
+
+          # Verify the version was set correctly
+          ACTUAL_VERSION=$(node -p "require('./package.json').version")
+          echo "✅ package.json version updated to: $ACTUAL_VERSION"
+
+          # Verify no pre-release identifiers
+          if [[ "$ACTUAL_VERSION" == *"-"* ]]; then
+            echo "❌ Error: Version still contains pre-release identifier: $ACTUAL_VERSION"
+            exit 1
           fi
 
           # Configure git
