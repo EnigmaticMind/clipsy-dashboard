@@ -94,16 +94,36 @@ jobs:
         run: |
           VERSION="${{ steps.get_version.outputs.version }}"
 
+          # For tag push events, we need to determine the default branch
+          # Try to get it from the remote, fallback to 'main'
+          DEFAULT_BRANCH=$(git remote show origin | grep "HEAD branch" | cut -d' ' -f5 || echo "main")
+          BRANCH=${DEFAULT_BRANCH:-main}
+          echo "Using branch: $BRANCH"
+
+          # Configure git to use the token
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+            
+
+          # Checkout the default branch (not the tag)
+          git fetch origin $BRANCH
+          git checkout -B $BRANCH origin/$BRANCH || git checkout $BRANCH
+
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add package.json src/manifest.ts 2>/dev/null || git add package.json
 
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-          git commit -m "Update version to $VERSION to match tag $TAG_NAME" || echo "Commit failed"
-
-          # Push to the branch
-          git push
-          echo "✅ Committed and pushed version update to $BRANCH"
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No version changes to commit (already matches release version)"
+          else
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+            git commit -m "Update version to $VERSION to match tag $TAG_NAME" || echo "Commit failed"
+            
+            
+            # Push to the branch
+            git push
+            echo "✅ Committed and pushed version update to $BRANCH"
+          fi
 
       - name: Set version output
         id: version
