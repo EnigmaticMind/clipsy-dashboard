@@ -22,24 +22,33 @@ jobs:
         if: github.event_name == 'release'
         run: |
           TAG_NAME="${{ github.event.release.tag_name }}"
+          echo "Original tag name: $TAG_NAME"
           VERSION=${TAG_NAME#v}  # Remove 'v' prefix if present
+          echo "After removing 'v' prefix: $VERSION"
           # Strip any pre-release identifiers (e.g., -alpha, -beta, -rc, etc.)
           VERSION=${VERSION%%-*}  # Remove everything after first hyphen
+          echo "After stripping pre-release identifiers: $VERSION"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Release version: $VERSION (cleaned from tag: ${{ github.event.release.tag_name }})"
+          echo "✅ Final cleaned version: $VERSION (from tag: ${{ github.event.release.tag_name }})"
 
       - name: Update code to match release version
         if: github.event_name == 'release'
         run: |
           VERSION="${{ steps.get_version.outputs.version }}"
-          echo "Updating package.json to version: $VERSION (manifest.ts reads from package.json)"
+          echo "Updating package.json to version: $VERSION"
+
+          # Show current version before update
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          echo "Current package.json version: $CURRENT_VERSION"
 
           # Update package.json directly using node (more reliable than npm version)
           node -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            console.log('Old version:', pkg.version);
             pkg.version = '$VERSION';
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+            console.log('New version:', pkg.version);
           "
 
           # Verify the version was set correctly
@@ -51,8 +60,13 @@ jobs:
             exit 1
           fi
 
-          # Note: manifest.ts reads version from package.json at build time, so no need to update it separately
-          echo "✅ Version updated. manifest.ts will use this version when built."
+          # Verify no pre-release identifiers
+          if [[ "$ACTUAL_VERSION" == *"-"* ]]; then
+            echo "❌ Error: Version still contains pre-release identifier: $ACTUAL_VERSION"
+            exit 1
+          fi
+
+          echo "✅ Version updated and validated. manifest.ts will use this version when built."
 
       - name: Commit version update
         if: github.event_name == 'release'
@@ -90,8 +104,47 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify version before build
+        if: github.event_name == 'release'
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          echo "Package.json version before build: $PKG_VERSION"
+
+          # Verify it doesn't contain pre-release identifiers
+          if [[ "$PKG_VERSION" == *"-"* ]]; then
+            echo "❌ Error: package.json version contains pre-release identifier: $PKG_VERSION"
+            exit 1
+          fi
+
+          echo "✅ Version validated: $PKG_VERSION"
+
       - name: Build extension
         run: npm run build
+
+      - name: Verify manifest version after build
+        if: github.event_name == 'release'
+        run: |
+          # Extract version from built manifest.json
+          if [ -f "dist/manifest.json" ]; then
+            MANIFEST_VERSION=$(node -p "require('./dist/manifest.json').version")
+            echo "Built manifest.json version: $MANIFEST_VERSION"
+            
+            if [[ "$MANIFEST_VERSION" == *"-"* ]]; then
+              echo "❌ Error: Built manifest.json contains pre-release identifier: $MANIFEST_VERSION"
+              echo "This will cause Chrome Web Store upload to fail!"
+              exit 1
+            fi
+            
+            EXPECTED_VERSION="${{ steps.get_version.outputs.version }}"
+            if [[ "$MANIFEST_VERSION" != "$EXPECTED_VERSION" ]]; then
+              echo "❌ Error: Manifest version mismatch! Expected $EXPECTED_VERSION but got $MANIFEST_VERSION"
+              exit 1
+            fi
+            
+            echo "✅ Manifest version validated: $MANIFEST_VERSION"
+          else
+            echo "⚠️  Warning: dist/manifest.json not found"
+          fi
 
       - name: Create zip file
         run: |
