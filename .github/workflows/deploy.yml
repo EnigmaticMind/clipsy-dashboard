@@ -92,6 +92,10 @@ jobs:
         run: |
           VERSION="${{ steps.get_version.outputs.version }}"
           BRANCH="${{ github.event.release.target_commitish }}"
+
+          # Ensure we're on the correct branch
+          git checkout -B $BRANCH || git checkout $BRANCH
+
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add package.json src/manifest.ts 2>/dev/null || git add package.json
@@ -101,8 +105,16 @@ jobs:
             echo "No version changes to commit (already matches release version)"
           else
             git commit -m "Update version to $VERSION to match release ${{ github.event.release.tag_name }}" || echo "Commit failed"
-            # Use the GITHUB_TOKEN explicitly for push
-            git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:$BRANCH || echo "Push failed"
+            
+            # Configure git to use the token
+            git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
+            
+            # Push to the branch
+            git push origin $BRANCH || {
+              echo "⚠️  Push failed. This might be due to branch protection rules."
+              echo "The version has been updated locally but not pushed to the remote."
+              exit 1
+            }
             echo "✅ Committed and pushed version update to $BRANCH"
           fi
 
