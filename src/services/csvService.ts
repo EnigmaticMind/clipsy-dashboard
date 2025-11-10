@@ -59,11 +59,11 @@ function decodeHTMLEntities(s: string): string {
 export function convertListingsToCSV(listings: ListingsResponse): string {
   const rows: string[][] = []
   
-  // Metadata rows (22 columns total)
-  const emptyRow = Array(22).fill('')
+  // Metadata rows (26 columns total - added Materials, Shipping Profile ID, Processing Min, Processing Max)
+  const emptyRow = Array(26).fill('')
   
   rows.push([
-    'INFO: This CSV contains your Etsy listings. For listings with variations, each variation appears on a separate row. Listing-level fields (Title, Description, Status, Tags) are only on the first row.',
+    'INFO: This CSV contains your Etsy listings. For listings with variations, each variation appears on a separate row. Listing-level fields (Title, Description, Status, Tags, Materials, Shipping Profile ID, Processing Time) are only on the first row.',
     ...emptyRow.slice(1)
   ])
   
@@ -109,6 +109,10 @@ export function convertListingsToCSV(listings: ListingsResponse): string {
     'Property Option IDs 1 (DO NOT EDIT)',
     'Property ID 2 (DO NOT EDIT)',
     'Property Option IDs 2 (DO NOT EDIT)',
+    'Materials',  // Comma-separated list of materials
+    'Shipping Profile ID',  // Shipping profile ID
+    'Processing Min (days)',  // Minimum processing time in days
+    'Processing Max (days)',  // Maximum processing time in days
   ])
   
   // Process each listing
@@ -204,6 +208,10 @@ export function convertListingsToCSV(listings: ListingsResponse): string {
           prop1 ? prop1.value_ids.join(',') : '',
           prop2 ? prop2.property_id.toString() : '',
           prop2 ? prop2.value_ids.join(',') : '',
+          i === 0 ? (listing.materials?.join(', ') || '') : '',  // Materials (only on first row)
+          i === 0 ? (listing.shipping_profile_id?.toString() || '') : '',  // Shipping Profile ID (only on first row)
+          i === 0 ? (listing.processing_min?.toString() || '') : '',  // Processing Min (only on first row)
+          i === 0 ? (listing.processing_max?.toString() || '') : '',  // Processing Max (only on first row)
         ]
         
         rows.push(row)
@@ -256,6 +264,10 @@ export function convertListingsToCSV(listings: ListingsResponse): string {
         '', '', '',  // No variation price/quantity/SKU
         productID,
         '', '', '', '',  // No property IDs
+        listing.materials?.join(', ') || '',  // Materials
+        listing.shipping_profile_id?.toString() || '',  // Shipping Profile ID
+        listing.processing_min?.toString() || '',  // Processing Min
+        listing.processing_max?.toString() || '',  // Processing Max
       ])
     }
   }
@@ -287,4 +299,55 @@ export function downloadCSV(csvContent: string, filename: string = 'etsy-listing
   document.body.removeChild(link)
   
   URL.revokeObjectURL(url)
+}
+
+// Count rows in CSV file quickly (without full parsing)
+// Returns approximate data row count (excluding header)
+export async function countCSVRows(file: File): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = async (e) => {
+      const text = e.target?.result as string
+      if (!text) {
+        resolve(0)
+        return
+      }
+      
+      // Count lines (accounting for CRLF and LF)
+      const lines = text.split(/\r?\n/).filter(line => line.trim() !== '')
+      
+      if (lines.length === 0) {
+        resolve(0)
+        return
+      }
+      
+      // Find header row index
+      let headerRowIndex = -1
+      for (let i = 0; i < Math.min(lines.length, 10); i++) {
+        // Parse first column (simple CSV parsing for header detection)
+        const firstCol = lines[i].split(',')[0]?.trim().toLowerCase().replace(/"/g, '') || ''
+        if (firstCol === 'listing id' || (firstCol.includes('listing') && firstCol.includes('id'))) {
+          headerRowIndex = i
+          break
+        }
+      }
+      
+      if (headerRowIndex === -1) {
+        // No header found, assume first row is header
+        headerRowIndex = 0
+      }
+      
+      // Count data rows (excluding header and any info rows before it)
+      // This is an approximation - actual count might vary due to variations
+      // but it's close enough for a limit check
+      const dataRowCount = lines.length - headerRowIndex - 1
+      const actualCount = Math.max(0, dataRowCount)
+      
+      // Apply row count override if set (for testing/debugging)
+      const { overrideRowCount } = await import('../utils/listingLimit')
+      resolve(overrideRowCount(actualCount))
+    }
+    reader.onerror = () => reject(new Error('Failed to read CSV file'))
+    reader.readAsText(file)
+  })
 }

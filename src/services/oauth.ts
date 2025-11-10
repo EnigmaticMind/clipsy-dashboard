@@ -285,35 +285,18 @@ export async function refreshAccessToken(token: EtsyToken): Promise<EtsyToken> {
 
 // Get stored token
 export async function getStoredToken(): Promise<EtsyToken | null> {
-  if (typeof chrome !== 'undefined' && chrome.storage) {
-    // Chrome extension
-    const result = await chrome.storage.local.get(STORAGE_TOKEN_NAME)
-    return result[STORAGE_TOKEN_NAME] || null
-  } else {
-    // Web app - use localStorage
-    const stored = localStorage.getItem(STORAGE_TOKEN_NAME)
-    return stored ? JSON.parse(stored) : null
-  }
+  const result = await chrome.storage.local.get(STORAGE_TOKEN_NAME)
+  return result[STORAGE_TOKEN_NAME] || null
 }
 
 // Store token
 async function storeToken(token: EtsyToken): Promise<void> {
-  if (typeof chrome !== 'undefined' && chrome.storage) {
-    // Chrome extension
-    await chrome.storage.local.set({ [STORAGE_TOKEN_NAME]: token })
-  } else {
-    // Web app - use localStorage
-    localStorage.setItem(STORAGE_TOKEN_NAME, JSON.stringify(token))
-  }
+  await chrome.storage.local.set({ [STORAGE_TOKEN_NAME]: token })
 }
 
 // Remove token
 export async function removeToken(): Promise<void> {
-  if (typeof chrome !== 'undefined' && chrome.storage) {
-    await chrome.storage.local.remove(STORAGE_TOKEN_NAME)
-  } else {
-    localStorage.removeItem(STORAGE_TOKEN_NAME)
-  }
+  await chrome.storage.local.remove(STORAGE_TOKEN_NAME)
 }
 
 // Get valid access token (checks expiration and refreshes if needed)

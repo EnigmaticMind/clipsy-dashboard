@@ -7,16 +7,34 @@ import manifest from './src/manifest'
 export default defineConfig({
   plugins: [
     react(),
-    crx({ manifest })
+    crx({ 
+      manifest,
+      // Enable content script HMR for better development experience
+      contentScripts: {
+        injectCss: true,
+      },
+    })
   ],
   server: {
     port: 3000,
+    // Enable HMR for live reload
+    hmr: {
+      port: 3000,
+    },
+  },
+  // Use esbuild to transform TypeScript in content scripts
+  esbuild: {
+    include: /src\/.*\.tsx?$/,
+    exclude: [],
   },
   build: {
     rollupOptions: {
       input: {
         dashboard: 'dashboard.html',
         'content/etsyEditor': 'src/content/etsyEditor.ts',
+        'sidepanel-etsy': 'sidepanel-etsy.html',
+        'sidepanel-google-sheets': 'sidepanel-google-sheets.html',
+        'sidepanel-default': 'sidepanel-default.html',
       },
     },
   },

@@ -8,36 +8,23 @@ import './etsyEditor.css';
 import { logger } from '../utils/logger';
 
 // Message handler for communication with background script
-interface MessageRequest {
-  action: string;
-  listingId?: number;
-  [key: string]: unknown;
-}
+// Using JSDoc instead of TypeScript type to avoid parsing issues
+/** @typedef {{ action: string; listingId?: number; [key: string]: unknown }} MessageRequest */
 
 // Check if we're on the listing editor page
-function isListingEditorPage(): boolean {
+function isListingEditorPage() {
   return window.location.pathname.includes('/listing-editor/edit/');
 }
 
 // Extract listing ID from URL
-function getListingIdFromURL(): number | null {
+function getListingIdFromURL() {
   const match = window.location.pathname.match(/\/edit\/(\d+)/);
   return match ? parseInt(match[1], 10) : null;
 }
 
-// Check user preference for auto-open
-async function shouldAutoOpen(): Promise<boolean> {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(['clipsy_auto_open_panel'], (result) => {
-      // Default to true if not set
-      resolve(result.clipsy_auto_open_panel !== false);
-    });
-  });
-}
-
 // Wait for Etsy's form fields to actually appear (smarter than arbitrary delay)
-function waitForFormFields(maxWait: number = 5000): Promise<void> {
-  return new Promise((resolve) => {
+function waitForFormFields(maxWait = 5000): Promise<void> {
+  return new Promise<void>((resolve) => {
     const startTime = Date.now();
     
     // Check immediately first - try multiple selectors
@@ -98,7 +85,7 @@ function waitForFormFields(maxWait: number = 5000): Promise<void> {
 
 // Wait for page to be ready
 function waitForPageReady(): Promise<void> {
-  return new Promise((resolve) => {
+  return new Promise<void>((resolve) => {
     if (document.readyState === 'complete') {
       waitForFormFields().then(resolve);
     } else {
@@ -195,6 +182,9 @@ function setupInputDetection(onInputFocus: (element: HTMLElement, value: string)
   }, true);
 }
 
+// Global variable for re-extraction interval
+let globalReExtractInterval: number | null = null;
+
 // Main initialization
 async function init() {
   if (!isListingEditorPage()) {
@@ -208,9 +198,6 @@ async function init() {
   }
 
   await waitForPageReady();
-
-  // Check if should auto-open
-  const autoOpen = await shouldAutoOpen();
   
   // Create panel container
   const panelContainer = createSidePanel();
@@ -228,7 +215,7 @@ async function init() {
       const response = await chrome.runtime.sendMessage({
         action: 'getListing',
         listingId: listingId,
-      } as MessageRequest);
+      });
 
       if (response && response.success && response.data) {
         listingData = {
@@ -567,19 +554,15 @@ async function init() {
   // Initial render (will fetch listing data)
   renderPanel(null, '');
 
-  // Auto-open if enabled
-  if (autoOpen) {
-    panelContainer.style.display = 'block';
-    panelContainer.classList.remove('clipsy-panel-hidden');
-  } else {
-    panelContainer.style.display = 'block';
-    panelContainer.classList.add('clipsy-panel-hidden');
-    // Add a button to manually open
-    addToggleButton(panelContainer);
-  }
+  // Always open the panel when on listing editor page
+  panelContainer.style.display = 'block';
+  panelContainer.classList.remove('clipsy-panel-hidden');
   
   // Always add the floating reopen icon (will be shown/hidden as needed)
   addReopenIcon(panelContainer);
+  
+  // Also add toggle button for manual control
+  addToggleButton(panelContainer);
 }
 
 // Add a toggle button to show/hide panel
@@ -644,32 +627,85 @@ function hideReopenIcon() {
   }
 }
 
-// Initialize when DOM is ready
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', init);
-} else {
-  init();
+// Enable side panel for Etsy editor (shows badge)
+async function enableSidePanel() {
+  try {
+    await chrome.runtime.sendMessage({
+      action: 'enableSidePanel',
+      type: 'etsy',
+    });
+    logger.log('Requested Etsy editor side panel to be enabled');
+  } catch (error) {
+    logger.error('Failed to request side panel enable:', error);
+  }
 }
 
-// Re-initialize on navigation (Etsy uses client-side routing)
-let lastUrl = location.href;
-let globalReExtractInterval: number | null = null;
+// Disable side panel (removes badge)
+async function disableSidePanel() {
+  try {
+    await chrome.runtime.sendMessage({
+      action: 'disableSidePanel',
+    });
+    logger.log('Requested side panel to be disabled');
+  } catch (error) {
+    logger.error('Failed to request side panel disable:', error);
+  }
+}
 
-new MutationObserver(() => {
-  const url = location.href;
-  if (url !== lastUrl) {
-    lastUrl = url;
-    // Clear any existing re-extraction interval
-    if (globalReExtractInterval) {
-      clearInterval(globalReExtractInterval);
-      globalReExtractInterval = null;
-    }
+// Monitor URL changes for SPA navigation
+let lastUrl = window.location.href;
+function checkUrlChange() {
+  const currentUrl = window.location.href;
+  if (currentUrl !== lastUrl) {
+    logger.log('URL changed from', lastUrl, 'to', currentUrl);
+    lastUrl = currentUrl;
+    
     if (isListingEditorPage()) {
-      // Wait for form fields instead of arbitrary delay
-      waitForFormFields(3000).then(() => {
-        init();
-      });
+      logger.log('Still on listing editor page, ensuring side panel is enabled');
+      enableSidePanel();
+    } else {
+      logger.log('Left listing editor page, disabling side panel');
+      disableSidePanel();
     }
   }
-}).observe(document, { subtree: true, childList: true });
+}
+
+// Initialize when DOM is ready
+// Content script opens the side panel automatically
+if (document.readyState === 'loading') {
+  logger.log('Etsy Editor content script loaded, initializing...');
+  document.addEventListener('DOMContentLoaded', () => {
+    init();
+    if (isListingEditorPage()) {
+      enableSidePanel();
+    }
+    // Monitor URL changes (for SPA navigation)
+    setInterval(checkUrlChange, 500);
+  });
+} else {
+  logger.log('Etsy Editor content script already loaded, initializing...');
+  init();
+  if (isListingEditorPage()) {
+    enableSidePanel();
+  }
+  // Monitor URL changes (for SPA navigation)
+  setInterval(checkUrlChange, 500);
+}
+
+// Also listen for popstate events (back/forward navigation)
+window.addEventListener('popstate', checkUrlChange);
+
+// Intercept pushState and replaceState (for programmatic navigation)
+const originalPushState = history.pushState;
+const originalReplaceState = history.replaceState;
+
+history.pushState = function(...args) {
+  originalPushState.apply(history, args);
+  setTimeout(checkUrlChange, 0);
+};
+
+history.replaceState = function(...args) {
+  originalReplaceState.apply(history, args);
+  setTimeout(checkUrlChange, 0);
+};
 

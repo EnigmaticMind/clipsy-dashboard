@@ -122,6 +122,24 @@ export async function createListing(
     requestBody.currency_code = listing.currencyCode
   }
 
+  // Add materials if provided
+  if (listing.materials && listing.materials.length > 0) {
+    requestBody.materials = listing.materials
+  }
+
+  // Use shipping profile ID from listing if provided, otherwise use default
+  if (listing.shippingProfileID) {
+    requestBody.shipping_profile_id = listing.shippingProfileID
+  }
+
+  // Add processing times if provided
+  if (listing.processingMin !== undefined) {
+    requestBody.processing_min = listing.processingMin
+  }
+  if (listing.processingMax !== undefined) {
+    requestBody.processing_max = listing.processingMax
+  }
+
   const response = await makeEtsyRequest(
     'POST',
     `/application/shops/${shopID}/listings`,
@@ -236,6 +254,52 @@ export async function updateListing(
   if (listing.hasVariations) {
     requestBody.has_variations = true
     needsUpdate = true
+  }
+
+  // Compare materials
+  if (listing.materials !== undefined) {
+    const existingMaterials = existingListing?.materials || []
+    const materialsEqual =
+      existingMaterials.length === listing.materials.length &&
+      existingMaterials.every(
+        (m, i) => m.toLowerCase() === listing.materials![i]?.toLowerCase()
+      )
+    if (!materialsEqual) {
+      requestBody.materials = listing.materials
+      needsUpdate = true
+    }
+  }
+
+  // Compare shipping profile ID
+  if (listing.shippingProfileID !== undefined) {
+    if (
+      existingListing === null ||
+      existingListing.shipping_profile_id !== listing.shippingProfileID
+    ) {
+      requestBody.shipping_profile_id = listing.shippingProfileID
+      needsUpdate = true
+    }
+  }
+
+  // Compare processing times
+  if (listing.processingMin !== undefined) {
+    if (
+      existingListing === null ||
+      existingListing.processing_min !== listing.processingMin
+    ) {
+      requestBody.processing_min = listing.processingMin
+      needsUpdate = true
+    }
+  }
+
+  if (listing.processingMax !== undefined) {
+    if (
+      existingListing === null ||
+      existingListing.processing_max !== listing.processingMax
+    ) {
+      requestBody.processing_max = listing.processingMax
+      needsUpdate = true
+    }
   }
 
   if (!needsUpdate) {

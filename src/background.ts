@@ -1,265 +1,327 @@
 // Background service worker for Chrome extension
-// Opens the dashboard when the extension icon is clicked
-// Handles Google Gemini API calls for AI suggestions
+// Handles messages from content scripts and opens/closes side panels
 
-import { getValidAccessToken } from './services/oauth';
-import { getListing } from './services/etsyApi';
-import { generateBulkEditCSV, type BulkEditOperation } from './services/bulkEditService';
-import { logger } from './utils/logger';
+// Simple logger for service worker (import.meta.env may not be available)
+const logger = {
+  log: (...args: unknown[]) => console.log('[Clipsy Background]', ...args),
+  error: (...args: unknown[]) => console.error('[Clipsy Background]', ...args),
+};
 
-// Google Gemini API endpoint - using gemini-2.0-flash
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
-
-// Make API call to Google Gemini
-async function callGeminiAPI(apiKey: string, prompt: string): Promise<string> {
-  const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      contents: [
-        {
-          parts: [
-            {
-              text: prompt,
-            },
-          ],
-        },
-      ],
-    }),
-  });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    const errorMessage = errorData.error?.message || `HTTP ${response.status}: ${response.statusText}`;
-    throw new Error(errorMessage);
-  }
-
-  const data = await response.json();
-  
-  if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
-    throw new Error('Invalid response from Gemini API');
-  }
-
-  const text = data.candidates[0].content.parts[0]?.text;
-  if (!text) {
-    throw new Error('No text in Gemini API response');
-  }
-
-  return text.trim();
-}
-
-// Test Gemini API key
-async function testGeminiAPI(apiKey: string): Promise<boolean> {
-  try {
-    await callGeminiAPI(apiKey, 'Say "OK" if you can read this.');
-    return true;
-  } catch (error) {
-    logger.warn('Gemini API test failed:', error);
-    return false;
-  }
-}
-
-chrome.action.onClicked.addListener(() => {
-  // Open the dashboard in a new tab
+// In src/background.ts
+chrome.action.onClicked.addListener(async () => {
+  logger.log('Extension icon clicked, opening dashboard');
+  // tab contains info about the active tab when icon was clicked
   chrome.tabs.create({
-    url: chrome.runtime.getURL('dashboard.html')
+    url: chrome.runtime.getURL('dashboard.html'),
   });
 });
 
-// Handle messages from content script
-interface Message {
-  action: string;
-  listingId?: number;
-  bulkEditOperation?: BulkEditOperation;
-  apiKey?: string;
-  prompt?: string;
-  [key: string]: unknown;
-}
+// // Check if URL matches Etsy listing editor pattern
+// function isEtsyListingEditorUrl(url: string): boolean {
+//   try {
+//     const urlObj = new URL(url);
+//     return (
+//       urlObj.hostname === 'www.etsy.com' &&
+//       urlObj.pathname.includes('/your/shops/me/listing-editor/edit/')
+//     );
+//   } catch {
+//     return false;
+//   }
+// }
 
-interface Response {
-  success: boolean;
-  data?: unknown;
-  error?: string;
-  token?: string;
-  message?: string;
-  csvContent?: string;
-  suggestion?: string;
-}
+// // Check if URL matches Google Sheets pattern
+// function isGoogleSheetsUrl(url: string): boolean {
+//   try {
+//     const urlObj = new URL(url);
+//     return (
+//       urlObj.hostname === 'docs.google.com' &&
+//       urlObj.pathname.startsWith('/spreadsheets/d/')
+//     );
+//   } catch {
+//     return false;
+//   }
+// }
 
-chrome.runtime.onMessage.addListener(
-  (message: Message, _sender: chrome.runtime.MessageSender, sendResponse: (response: Response) => void) => {
-    if (message.action === 'getListing') {
-      // Fetch listing from Etsy API
-      (async () => {
-        try {
-          await getValidAccessToken();
-          if (!message.listingId) {
-            sendResponse({
-              success: false,
-              error: 'Missing listingId',
-            });
-            return;
-          }
-          const listing = await getListing(message.listingId);
-          
-          sendResponse({
-            success: true,
-            data: {
-              title: listing.title,
-              description: listing.description,
-              tags: listing.tags,
-            },
-          });
-        } catch (error) {
-          sendResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          });
-        }
-      })();
-      
-      return true; // Keep channel open for async response
-    }
+// // Extract sheet ID from Google Sheets URL
+// function extractSheetIdFromUrl(url: string): string | null {
+//   try {
+//     const urlObj = new URL(url);
+//     const match = urlObj.pathname.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+//     return match ? match[1] : null;
+//   } catch {
+//     return null;
+//   }
+// }
+
+// // Check if a Google Sheet ID is a Clipsy sheet by checking the title
+// async function isClipsySheet(sheetId: string): Promise<boolean> {
+//   try {
+//     // Get Google Sheets access token
+//     // We need to use chrome.identity.getAuthToken since we're in a service worker
+//     return new Promise((resolve) => {
+//       chrome.identity.getAuthToken(
+//         {
+//           interactive: false,
+//           scopes: [
+//             'https://www.googleapis.com/auth/spreadsheets',
+//             'https://www.googleapis.com/auth/drive.readonly'
+//           ]
+//         },
+//         async (token) => {
+//           if (chrome.runtime.lastError || !token) {
+//             logger.error('Failed to get Google token for sheet check:', chrome.runtime.lastError?.message);
+//             resolve(false);
+//             return;
+//           }
+
+//           try {
+//             // Fetch spreadsheet metadata to get the title
+//             const response = await fetch(
+//               `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=properties.title`,
+//               {
+//                 headers: {
+//                   'Authorization': `Bearer ${token}`
+//                 }
+//               }
+//             );
+
+//             if (!response.ok) {
+//               logger.error('Failed to fetch spreadsheet metadata:', response.statusText);
+//               resolve(false);
+//               return;
+//             }
+
+//             const data = await response.json();
+//             const title = data.properties?.title || '';
+            
+//             // Check if title contains "Clipsy Listings"
+//             const isClipsy = title.includes('Clipsy Listings');
+//             logger.log(`Sheet "${title}" is ${isClipsy ? 'a' : 'not a'} Clipsy sheet`);
+//             resolve(isClipsy);
+//           } catch (error) {
+//             logger.error('Error checking sheet title:', error);
+//             resolve(false);
+//           }
+//         }
+//       );
+//     });
+//   } catch (error) {
+//     logger.error('Error checking if sheet is Clipsy sheet:', error);
+//     return false;
+//   }
+// }
+
+// // Handle tab URL updates (for full page navigations)
+// chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+//   logger.log('Tab updated:', tabId, changeInfo, tab);
+//   // Only process when URL changes and tab is complete
+//   if (!changeInfo.url || changeInfo.status !== 'complete') {
+//     return;
+//   }
+
+//   const url = changeInfo.url;
+
+//   // Check for Etsy listing editor
+//   if (isEtsyListingEditorUrl(url)) {
+//     logger.log('Detected Etsy listing editor URL:', url);
+//     await enableSidePanelForTab(tabId, 'etsy');
+//     return;
+//   }
+
+//   // Check for Google Sheets
+//   if (isGoogleSheetsUrl(url)) {
+//     const sheetId = extractSheetIdFromUrl(url);
+//     if (sheetId) {
+//       const isClipsy = await isClipsySheet(sheetId);
+//       if (isClipsy) {
+//         logger.log('Detected Clipsy Google Sheets URL:', url);
+//         await enableSidePanelForTab(tabId, 'googleSheets');
+//         return;
+//       }
+//     }
+//     // Not a Clipsy sheet or couldn't extract ID - disable side panel
+//     await disableSidePanelForTab(tabId);
+//     return;
+//   }
+
+//   // Not on a matching page - disable side panel
+//   await disableSidePanelForTab(tabId);
+// });
+
+// // Enable side panel for a specific tab (don't open it - requires user gesture)
+// async function enableSidePanelForTab(tabId: number, panelType: 'etsy' | 'googleSheets'): Promise<void> {
+//   try {
+//     const path = panelType === 'etsy' 
+//       ? 'sidepanel-etsy.html' 
+//       : 'sidepanel-google-sheets.html';
+
+//     await chrome.sidePanel.setOptions({
+//       tabId: tabId,
+//       path: path,
+//       enabled: true,
+//     });
     
-    if (message.action === 'getAccessToken') {
-      // Get access token from storage
-      (async () => {
-        try {
-          const token = await getValidAccessToken();
-          sendResponse({ success: true, token });
-        } catch (error) {
-          sendResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'No token found',
-          });
-        }
-      })();
-      
-      return true; // Keep channel open for async response
-    }
-
-    if (message.action === 'generateAISuggestion') {
-      // Generate AI suggestion using Gemini API
-      (async () => {
-        try {
-          if (!message.apiKey) {
-            sendResponse({
-              success: false,
-              error: 'API key is required',
-            });
-            return;
-          }
-
-          if (!message.prompt) {
-            sendResponse({
-              success: false,
-              error: 'Prompt is required',
-            });
-            return;
-          }
-
-          const suggestion = await callGeminiAPI(message.apiKey, message.prompt);
-          
-          sendResponse({
-            success: true,
-            suggestion,
-          });
-        } catch (error) {
-          logger.error('Gemini API error:', error);
-          sendResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          });
-        }
-      })();
-      
-      return true; // Keep channel open for async response
-    }
-
-    if (message.action === 'testGeminiAPI') {
-      // Test Gemini API key
-      (async () => {
-        try {
-          if (!message.apiKey) {
-            sendResponse({
-              success: false,
-              error: 'API key is required',
-            });
-            return;
-          }
-
-          const isValid = await testGeminiAPI(message.apiKey);
-          
-          sendResponse({
-            success: isValid,
-            error: isValid ? undefined : 'API key validation failed',
-          });
-        } catch (error) {
-          sendResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          });
-        }
-      })();
-      
-      return true; // Keep channel open for async response
-    }
+//     // Show badge to indicate side panel is available
+//     await chrome.action.setBadgeText({
+//       tabId: tabId,
+//       text: '●',
+//     });
+//     await chrome.action.setBadgeBackgroundColor({
+//       tabId: tabId,
+//       color: '#6366f1', // Indigo color
+//     });
     
-    if (message.action === 'generateBulkEditCSV') {
-      // Generate bulk edit CSV from background script to avoid CORS issues
-      (async () => {
-        try {
-          if (!message.bulkEditOperation) {
-            sendResponse({
-              success: false,
-              error: 'Missing bulkEditOperation',
-            });
-            return;
-          }
+//     logger.log(`Side panel enabled for ${panelType} on tab ${tabId}`);
+//   } catch (error) {
+//     logger.error(`Failed to set ${panelType} side panel options:`, error);
+//   }
+// }
 
-          const csvContent = await generateBulkEditCSV(
-            message.bulkEditOperation,
-            (message, current, total) => {
-              logger.log(`Bulk edit progress: ${message}${current !== undefined ? ` (${current}/${total})` : ''}`);
-            }
-          );
+// // Open side panel for a specific tab (called in response to user gesture)
+// async function openSidePanelForTab(tabId: number, panelType: 'etsy' | 'googleSheets'): Promise<void> {
+//   try {
+//     const path = panelType === 'etsy' 
+//       ? 'sidepanel-etsy.html' 
+//       : 'sidepanel-google-sheets.html';
 
-          sendResponse({
-            success: true,
-            csvContent,
-          });
-        } catch (error) {
-          logger.error('Bulk edit error:', error);
-          sendResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          });
-        }
-      })();
+//     await chrome.sidePanel.setOptions({
+//       tabId: tabId,
+//       path: path,
+//       enabled: true,
+//     });
+    
+//     // Now we can open because it's in response to user clicking the icon
+//     await chrome.sidePanel.open({ tabId });
+//     logger.log(`Opened ${panelType} side panel for tab:`, tabId);
+//   } catch (error) {
+//     logger.error(`Failed to open ${panelType} side panel:`, error);
+//   }
+// }
 
-      return true; // Keep channel open for async response
-    }
+// // Disable side panel for a specific tab and remove badge
+// async function disableSidePanelForTab(tabId: number): Promise<void> {
+//   try {
+//     await chrome.sidePanel.setOptions({
+//       tabId: tabId,
+//       enabled: false,
+//     });
+    
+//     // Remove badge
+//     await chrome.action.setBadgeText({
+//       tabId: tabId,
+//       text: '',
+//     });
+    
+//     logger.log(`Disabled side panel for tab:`, tabId);
+//   } catch (error) {
+//     logger.error(`Failed to disable side panel:`, error);
+//   }
+// }
 
-    if (message.action === 'openDashboard') {
-      // Open dashboard in a new tab from background script (content scripts can't use chrome.tabs)
-      (async () => {
-        try {
-          chrome.tabs.create({
-            url: chrome.runtime.getURL('dashboard.html'),
-          });
-          sendResponse({ success: true });
-        } catch (error) {
-          logger.error('Failed to open dashboard:', error);
-          sendResponse({
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          });
-        }
-      })();
+// // Handle messages from content scripts
+// chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+//   logger.log('Message received:', message);
+//   if (message.action === 'getListing') {
+//     // Handle getListing request (existing functionality)
+//     // This can be implemented if needed
+//     sendResponse({ success: false, error: 'Not implemented' });
+//     return true;
+//   }
 
-      return true; // Keep channel open for async response
-    }
-  }
-);
+//   if (message.action === 'openDashboard') {
+//     // Open dashboard window
+//     chrome.windows.create({
+//       url: chrome.runtime.getURL('dashboard.html'),
+//       type: 'popup',
+//       width: 1200,
+//       height: 800,
+//     });
+//     sendResponse({ success: true });
+//     return true;
+//   }
+
+//   if (message.action === 'checkIfClipsySheet') {
+//     // Check if a sheet is a Clipsy sheet
+//     isClipsySheet(message.sheetId).then((isClipsy) => {
+//       sendResponse({ isClipsy });
+//     });
+//     return true;
+//   }
+
+//   if (message.action === 'enableSidePanel') {
+//     // Enable side panel - called by content scripts (shows badge)
+//     const tabId = _sender.tab?.id;
+//     if (!tabId) {
+//       sendResponse({ success: false, error: 'No tab ID' });
+//       return true;
+//     }
+
+//     const panelType = message.type; // 'etsy' or 'googleSheets'
+//     enableSidePanelForTab(tabId, panelType).then(() => {
+//       sendResponse({ success: true });
+//     }).catch((error: unknown) => {
+//       sendResponse({ success: false, error: String(error) });
+//     });
+
+//     return true; // Keep channel open for async response
+//   }
+
+//   if (message.action === 'disableSidePanel') {
+//     // Disable side panel - called by content scripts (removes badge)
+//     const tabId = _sender.tab?.id;
+//     if (!tabId) {
+//       sendResponse({ success: false, error: 'No tab ID' });
+//       return true;
+//     }
+
+//     disableSidePanelForTab(tabId).then(() => {
+//       sendResponse({ success: true });
+//     }).catch((error: unknown) => {
+//       sendResponse({ success: false, error: String(error) });
+//     });
+
+//     return true; // Keep channel open for async response
+//   }
+
+//   return false;
+// });
+
+// // Handle extension icon click - open dashboard or side panel
+// chrome.action.onClicked.addListener(async (tab) => {
+//   if (!tab.id || !tab.url) {
+//     // No active tab, open dashboard
+//     chrome.tabs.create({
+//       url: chrome.runtime.getURL('dashboard.html'),
+//     });
+//     return;
+//   }
+
+//   const url = tab.url;
+
+//   // Check if we're on a page that should show a side panel
+//   if (isEtsyListingEditorUrl(url)) {
+//     // Open Etsy side panel
+//     await openSidePanelForTab(tab.id, 'etsy');
+//     return;
+//   }
+
+//   if (isGoogleSheetsUrl(url)) {
+//     const sheetId = extractSheetIdFromUrl(url);
+//     if (sheetId) {
+//       const isClipsy = await isClipsySheet(sheetId);
+//       if (isClipsy) {
+//         // Open Google Sheets side panel
+//         await openSidePanelForTab(tab.id, 'googleSheets');
+//         return;
+//       }
+//     }
+//   }
+
+//   // Not on a matching page, open dashboard
+//   chrome.tabs.create({
+//     url: chrome.runtime.getURL('dashboard.html'),
+//   });
+// });
+
+logger.log('Background service worker initialized');
+

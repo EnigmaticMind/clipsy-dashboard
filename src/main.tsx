@@ -3,17 +3,34 @@ import { createRoot } from "react-dom/client";
 import { createHashRouter, RouterProvider } from "react-router-dom";
 import "./index.css";
 import { ToastProvider } from "./contexts/ToastContext";
-import Layout from "./components/MainLayout";
+import { ReviewPromptProvider } from "./contexts/ReviewPromptContext";
+import { initializeFirstUseDate } from "./services/reviewPrompt";
+import { testAnalytics } from "./services/analytics";
+import ProtectedLayout from "./components/ProtectedLayout";
 import DownloadUploadPage from "./pages/DownloadUploadPage";
 import HowItWorksPage from "./pages/HowItWorksPage";
 import ContactPage from "./pages/ContactPage";
 import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
 import SettingsPage from "./pages/SettingsPage";
-import AuthPage from "./pages/AuthPage";
+import EtsyAuthPage from "./pages/auth/EtsyAuthPage";
+import GoogleAuthPage from "./pages/auth/GoogleAuthPage";
+import MainLayout from "./components/MainLayout";
 
-// Check for OAuth callback on page load
-// If we have OAuth query params, navigate to /auth with them in the hash
-if (typeof window !== "undefined") {
+// Initialize first use date tracking
+initializeFirstUseDate().catch(console.error);
+
+// Expose test function to window for debugging (dev only)
+if (import.meta.env?.MODE === "development" || import.meta.env?.DEV === true) {
+  (
+    window as typeof window & { testAnalytics: typeof testAnalytics }
+  ).testAnalytics = testAnalytics;
+  console.log("💡 Tip: Call window.testAnalytics() to test Google Analytics");
+}
+
+// Check for OAuth callback on page load (Etsy OAuth redirects with query params)
+// Google OAuth uses getAuthToken() and doesn't redirect, so this is only for Etsy
+// If we have OAuth query params, move them to hash for HashRouter
+if (typeof window !== "undefined" && !window.location.hash) {
   const urlParams = new URLSearchParams(window.location.search);
   const code = urlParams.get("code");
   const state = urlParams.get("state");
@@ -25,9 +42,11 @@ if (typeof window !== "undefined") {
     if (code) hashParams.set("code", code);
     if (state) hashParams.set("state", state);
     if (error) hashParams.set("error", error);
+    const errorDescription = urlParams.get("error_description");
+    if (errorDescription) hashParams.set("error_description", errorDescription);
 
-    // Navigate to /auth with params in hash
-    window.location.hash = `/auth?${hashParams.toString()}`;
+    // Set hash with params (MainLayout will handle the OAuth callback)
+    window.location.hash = `?${hashParams.toString()}`;
     // Clear search params
     window.history.replaceState({}, "", window.location.pathname);
   }
@@ -40,11 +59,18 @@ if (typeof window !== "undefined") {
 const router = createHashRouter([
   {
     path: "/",
-    element: <Layout />,
+    element: <MainLayout />,
     children: [
       {
-        index: true,
-        element: <DownloadUploadPage />,
+        path: "/",
+        // Protected routes
+        element: <ProtectedLayout />,
+        children: [
+          {
+            index: true,
+            element: <DownloadUploadPage />,
+          },
+        ],
       },
       {
         path: "how-it-works",
@@ -62,18 +88,24 @@ const router = createHashRouter([
         path: "settings",
         element: <SettingsPage />,
       },
+      {
+        path: "auth/etsy",
+        element: <EtsyAuthPage />,
+      },
+      {
+        path: "auth/google",
+        element: <GoogleAuthPage />,
+      },
     ],
-  },
-  {
-    path: "/auth",
-    element: <AuthPage />,
   },
 ]);
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ToastProvider>
-      <RouterProvider router={router} />
+      <ReviewPromptProvider>
+        <RouterProvider router={router} />
+      </ReviewPromptProvider>
     </ToastProvider>
   </StrictMode>
 );

@@ -144,6 +144,38 @@ export async function getShopID(): Promise<number> {
   return data.shop_id
 }
 
+// Maximum number of listings allowed for CSV download/upload operations
+export const MAX_LISTINGS_FOR_DOWNLOAD_UPLOAD = 1000
+
+// Get total listing count without fetching all listings (lightweight check)
+export async function getListingCount(
+  shopID: number,
+  status?: ListingStatus
+): Promise<number> {
+  const limit = 1 // Only need 1 result to get the count
+  const params = new URLSearchParams({
+    includes: 'Inventory',
+    limit: limit.toString(),
+    offset: '0',
+  })
+  
+  if (status) {
+    params.set('state', status)
+  }
+  
+  const response = await makeEtsyRequest(
+    'GET',
+    `/application/shops/${shopID}/listings?${params.toString()}`
+  )
+  
+  const data: ListingsResponse = await response.json()
+  const actualCount = data.count // Total count is in the response
+  
+  // Apply row count override if set (for testing/debugging)
+  const { overrideRowCount } = await import('../utils/listingLimit')
+  return overrideRowCount(actualCount)
+}
+
 // Listing types
 export type ListingStatus = 'active' | 'inactive' | 'draft' | 'sold_out' | 'expired'
 
@@ -205,6 +237,9 @@ export interface Listing {
   inventory: Inventory
   taxonomy_id?: number // Taxonomy ID for the listing category
   shipping_profile_id?: number // Shipping profile ID (required for physical listings)
+  materials?: string[] // Materials used in the product
+  processing_min?: number // Minimum processing time in days
+  processing_max?: number // Maximum processing time in days
 }
 
 // Listings Response type

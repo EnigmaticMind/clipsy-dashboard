@@ -16,6 +16,10 @@ export interface ProcessedListing {
   hasVariations: boolean
   variations: ProcessedVariation[]
   toDelete: boolean
+  materials?: string[] // Materials used in the product
+  shippingProfileID?: number // Shipping profile ID
+  processingMin?: number // Minimum processing time in days
+  processingMax?: number // Maximum processing time in days
 }
 
 export interface ProcessedVariation {
@@ -74,8 +78,8 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
     throw new Error('Could not find header row in CSV')
   }
 
-  // New CSV format has 22 columns
-  const minColumns = 22
+  // New CSV format has 26 columns (added Materials, Shipping Profile ID, Processing Min, Processing Max)
+  const minColumns = 26
 
   const listings: ProcessedListing[] = []
   let currentListing: ProcessedListing | null = null
@@ -100,12 +104,13 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
       }
     }
 
-    // New CSV structure (22 columns):
+    // New CSV structure (26 columns):
     // 0: Listing ID, 1: Title, 2: Description, 3: Status, 4: Tags,
     // 5: Variation, 6: Property Name 1, 7: Property Option 1, 8: Property Name 2, 9: Property Option 2,
     // 10: Price, 11: Currency Code, 12: Quantity, 13: SKU,
     // 14: Variation Price, 15: Variation Quantity, 16: Variation SKU,
-    // 17: Product ID, 18: Property ID 1, 19: Property Option IDs 1, 20: Property ID 2, 21: Property Option IDs 2
+    // 17: Product ID, 18: Property ID 1, 19: Property Option IDs 1, 20: Property ID 2, 21: Property Option IDs 2,
+    // 22: Materials, 23: Shipping Profile ID, 24: Processing Min, 25: Processing Max
 
     const row = {
       listingID: safeGet(record, 0),
@@ -130,6 +135,10 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
       propertyOptionIDs1: safeGet(record, 19),
       propertyID2: safeGet(record, 20),
       propertyOptionIDs2: safeGet(record, 21),
+      materials: safeGet(record, 22),
+      shippingProfileID: safeGet(record, 23),
+      processingMin: safeGet(record, 24),
+      processingMax: safeGet(record, 25),
     }
 
     // Determine if this is a new listing row
@@ -165,6 +174,24 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
       // Determine if has variations (check if Property Option columns have values)
       const hasVariations = row.propertyOption1 !== '' || row.propertyOption2 !== ''
 
+      // Parse materials (comma-separated string)
+      const materials = row.materials?.trim()
+        ? row.materials.split(',').map(m => m.trim()).filter(m => m.length > 0)
+        : undefined
+
+      // Parse shipping profile ID
+      const shippingProfileID = row.shippingProfileID?.trim()
+        ? parseInt(row.shippingProfileID, 10) || undefined
+        : undefined
+
+      // Parse processing times
+      const processingMin = row.processingMin?.trim()
+        ? parseInt(row.processingMin, 10) || undefined
+        : undefined
+      const processingMax = row.processingMax?.trim()
+        ? parseInt(row.processingMax, 10) || undefined
+        : undefined
+
       currentListing = {
         listingID,
         title: row.title,
@@ -178,6 +205,10 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
         toDelete,
         quantity: row.quantity ? parseInt(row.quantity, 10) || null : null,
         price: row.price ? parseFloat(row.price) || null : null,
+        materials,
+        shippingProfileID,
+        processingMin,
+        processingMax,
       }
 
       // If this row has variation data, add it as first variation
