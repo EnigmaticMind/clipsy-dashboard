@@ -3,6 +3,7 @@
 
 import { getValidAccessToken } from './oauth'
 import { logger } from '../utils/logger'
+import { extractErrorMessage } from '../utils/dataParsing'
 
 const ETSY_API_BASE_URL = 'https://api.etsy.com/v3'
 
@@ -87,30 +88,10 @@ export async function makeEtsyRequest(
         }
         
         // Extract error message from various possible formats
-        let errorMessage = errorData.error || errorData.message || `API request failed: ${status}`
-        
-        // Handle Etsy API specific error formats
-        if (errorData.errors && Array.isArray(errorData.errors)) {
-          // Etsy sometimes returns errors as an array
-          const errorMessages = errorData.errors.map((e: any) => 
-            e.message || e.error || JSON.stringify(e)
-          ).join('; ')
-          errorMessage = errorMessages || errorMessage
-        } else if (typeof errorData.error === 'object' && errorData.error !== null) {
-          // Error might be an object with nested details
-          if (errorData.error.message) {
-            errorMessage = errorData.error.message
-          } else if (errorData.error.error) {
-            errorMessage = errorData.error.error
-          } else {
-            errorMessage = JSON.stringify(errorData.error)
-          }
-        }
-        
-        // Include additional context if available
-        if (errorData.params) {
-          errorMessage += ` (params: ${JSON.stringify(errorData.params)})`
-        }
+        const errorMessage = extractErrorMessage(
+          errorData,
+          `API request failed: ${status}`
+        )
         
         throw new Error(errorMessage)
       }

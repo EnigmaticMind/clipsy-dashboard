@@ -33,6 +33,7 @@ import { applyUploadCSV } from "../services/applyService";
 import { createBackupCSV } from "../services/backupService";
 import { setReviewPromptPending } from "../services/reviewPrompt";
 import { trackDownload, trackUpload } from "../services/analytics";
+import { APP_VERSION } from "../constants/version";
 
 export default function DownloadUploadPage() {
   const toast = useToast();
@@ -160,9 +161,8 @@ export default function DownloadUploadPage() {
         // Convert to CSV and download
         setLoadingMessage("Generating CSV file...");
         const csvContent = convertListingsToCSV(listings);
-        const filename = `clipsy-listings-${
-          new Date().toISOString().split("T")[0]
-        }.csv`;
+        const dateStr = new Date().toISOString().split("T")[0];
+        const filename = `clipsy-listings-v${APP_VERSION}-${dateStr}.csv`;
         downloadCSV(csvContent, filename);
         toast.showSuccess("Listings downloaded successfully!");
         // Track analytics
@@ -611,11 +611,7 @@ export default function DownloadUploadPage() {
         </h2>
         <p className="text-gray-600 mb-6">
           Download all your Etsy listings for editing. You can also download to
-          Google Sheets for a more visual way to manage your listings, be
-          careful though,{" "}
-          <span className="font-bold text-red-500">
-            it might overwrite your existing sheet.
-          </span>
+          Google Sheets for a more visual way to manage your listings.
         </p>
 
         <div className="mb-6">

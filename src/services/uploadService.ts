@@ -2,6 +2,15 @@
 // Ported from backend Go code
 
 import Papa from 'papaparse'
+import {
+  findHeaderRowIndex,
+  safeGetCell,
+  safeParseInt,
+  parseCommaSeparated,
+  parseCommaSeparatedIds,
+  padRow,
+  parseId,
+} from '../utils/dataParsing'
 
 export interface ProcessedListing {
   listingID: number
@@ -64,15 +73,7 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
   }
 
   // Find header row (look for "Listing ID" or "Title" in first columns)
-  let headerRowIndex = -1
-  for (let i = 0; i < records.length; i++) {
-    const firstCol = records[i][0]?.trim().toLowerCase() || ''
-    const secondCol = records[i][1]?.trim().toLowerCase() || ''
-    if (firstCol === 'listing id' || secondCol === 'title') {
-      headerRowIndex = i
-      break
-    }
-  }
+  const headerRowIndex = findHeaderRowIndex(records, ['listing id', 'title'])
 
   if (headerRowIndex === -1) {
     throw new Error('Could not find header row in CSV')
@@ -89,7 +90,7 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
     let record = records[i]
 
     // Skip empty rows
-    if (record.length === 0 || (record.length === 1 && record[0].trim() === '')) {
+    if (record.length === 0 || (record.length === 1 && record[0]?.trim() === '')) {
       continue
     }
 
@@ -98,10 +99,7 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
       if (record.length < 15) {
         continue // Skip rows that are too short
       }
-      // Pad record to expected length
-      while (record.length < minColumns) {
-        record = [...record, '']
-      }
+      record = padRow(record, minColumns)
     }
 
     // New CSV structure (26 columns):
@@ -113,37 +111,37 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
     // 21: Product ID, 22: Property ID 1, 23: Property Option IDs 1, 24: Property ID 2, 25: Property Option IDs 2
 
     const row = {
-      listingID: safeGet(record, 0),
-      title: safeGet(record, 1),
-      description: safeGet(record, 2),
-      status: safeGet(record, 3),
-      tags: safeGet(record, 4),
-      variation: safeGet(record, 5),  // Display only, can ignore
-      propertyName1: safeGet(record, 6),
-      propertyOption1: safeGet(record, 7),
-      propertyName2: safeGet(record, 8),
-      propertyOption2: safeGet(record, 9),
-      price: safeGet(record, 10),
-      currencyCode: safeGet(record, 11),
-      quantity: safeGet(record, 12),
-      sku: safeGet(record, 13),
-      variationPrice: safeGet(record, 14),
-      variationQuantity: safeGet(record, 15),
-      variationSKU: safeGet(record, 16),
-      materials: safeGet(record, 17),  // Changed from 22
-      shippingProfileID: safeGet(record, 18),  // Changed from 23
-      processingMin: safeGet(record, 19),  // Changed from 24
-      processingMax: safeGet(record, 20),  // Changed from 25
-      productID: safeGet(record, 21),  // Changed from 17 - THIS IS THE KEY FIX
-      propertyID1: safeGet(record, 22),  // Changed from 18
-      propertyOptionIDs1: safeGet(record, 23),  // Changed from 19
-      propertyID2: safeGet(record, 24),  // Changed from 20
-      propertyOptionIDs2: safeGet(record, 25),  // Changed from 21
+      listingID: safeGetCell(record, 0),
+      title: safeGetCell(record, 1),
+      description: safeGetCell(record, 2),
+      status: safeGetCell(record, 3),
+      tags: safeGetCell(record, 4),
+      variation: safeGetCell(record, 5),  // Display only, can ignore
+      propertyName1: safeGetCell(record, 6),
+      propertyOption1: safeGetCell(record, 7),
+      propertyName2: safeGetCell(record, 8),
+      propertyOption2: safeGetCell(record, 9),
+      price: safeGetCell(record, 10),
+      currencyCode: safeGetCell(record, 11),
+      quantity: safeGetCell(record, 12),
+      sku: safeGetCell(record, 13),
+      variationPrice: safeGetCell(record, 14),
+      variationQuantity: safeGetCell(record, 15),
+      variationSKU: safeGetCell(record, 16),
+      materials: safeGetCell(record, 17),  // Changed from 22
+      shippingProfileID: safeGetCell(record, 18),  // Changed from 23
+      processingMin: safeGetCell(record, 19),  // Changed from 24
+      processingMax: safeGetCell(record, 20),  // Changed from 25
+      productID: safeGetCell(record, 21),  // Changed from 17 - THIS IS THE KEY FIX
+      propertyID1: safeGetCell(record, 22),  // Changed from 18
+      propertyOptionIDs1: safeGetCell(record, 23),  // Changed from 19
+      propertyID2: safeGetCell(record, 24),  // Changed from 20
+      propertyOptionIDs2: safeGetCell(record, 25),  // Changed from 21
     }
 
     // Determine if this is a new listing row
     // New format: Title/Description/Status/Tags are only on first row, Listing ID may be empty on variation rows
-    const listingID = parseInt(row.listingID, 10) || 0
+    const listingID = safeParseInt(row.listingID, 0)
     
     // Check if this row has variation data (property options)
     const hasVariationData = row.propertyOption1 !== '' || row.propertyOption2 !== ''
@@ -198,22 +196,15 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
       const hasVariations = row.propertyOption1 !== '' || row.propertyOption2 !== ''
 
       // Parse materials (comma-separated string)
-      const materials = row.materials?.trim()
-        ? row.materials.split(',').map(m => m.trim()).filter(m => m.length > 0)
-        : undefined
+      const materialsArray = parseCommaSeparated(row.materials, { filterEmpty: true })
+      const materials = materialsArray.length > 0 ? materialsArray : undefined
 
       // Parse shipping profile ID
-      const shippingProfileID = row.shippingProfileID?.trim()
-        ? parseInt(row.shippingProfileID, 10) || undefined
-        : undefined
+      const shippingProfileID = parseId(row.shippingProfileID) || undefined
 
       // Parse processing times
-      const processingMin = row.processingMin?.trim()
-        ? parseInt(row.processingMin, 10) || undefined
-        : undefined
-      const processingMax = row.processingMax?.trim()
-        ? parseInt(row.processingMax, 10) || undefined
-        : undefined
+      const processingMin = parseId(row.processingMin) || undefined
+      const processingMax = parseId(row.processingMax) || undefined
 
       currentListing = {
         listingID,
@@ -226,7 +217,7 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
         hasVariations,
         variations: [],
         toDelete,
-        quantity: row.quantity ? parseInt(row.quantity, 10) || null : null,
+        quantity: row.quantity ? safeParseInt(row.quantity, 0) || null : null,
         price: parsePrice(row.price),
         materials,
         shippingProfileID,
@@ -297,12 +288,7 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
   return listings
 }
 
-function safeGet(record: string[], index: number): string {
-  if (index < record.length) {
-    return record[index].trim()
-  }
-  return ''
-}
+// safeGetCell is now imported from dataParsing utils
 
 // Parse price from string, handling currency symbols, commas, and whitespace
 function parsePrice(priceStr: string): number | null {
@@ -328,13 +314,7 @@ function parsePrice(priceStr: string): number | null {
 }
 
 function parseTags(tagsStr: string): string[] {
-  if (tagsStr === '') {
-    return []
-  }
-  return tagsStr
-    .split(',')
-    .map((tag) => tag.trim())
-    .filter((tag) => tag !== '')
+  return parseCommaSeparated(tagsStr, { filterEmpty: true })
 }
 
 function parseVariation(row: {
@@ -359,32 +339,20 @@ function parseVariation(row: {
     propertyOption2: row.propertyOption2,
     propertySKU: row.variationSKU || '',
     propertyQuantity: row.variationQuantity
-      ? parseInt(row.variationQuantity, 10) || null
+      ? safeParseInt(row.variationQuantity, 0) || null
       : null,
     propertyPrice: parsePrice(row.variationPrice),
-    propertyID1: parseInt(row.propertyID1, 10) || 0,
-    propertyOptionIDs1: row.propertyOptionIDs1
-      ? row.propertyOptionIDs1
-          .split(',')
-          .map((id) => parseInt(id.trim(), 10))
-          .filter((id) => !isNaN(id))
-      : [],
-    propertyID2: parseInt(row.propertyID2, 10) || 0,
-    propertyOptionIDs2: row.propertyOptionIDs2
-      ? row.propertyOptionIDs2
-          .split(',')
-          .map((id) => parseInt(id.trim(), 10))
-          .filter((id) => !isNaN(id))
-      : [],
+    propertyID1: safeParseInt(row.propertyID1, 0),
+    propertyOptionIDs1: parseCommaSeparatedIds(row.propertyOptionIDs1),
+    propertyID2: safeParseInt(row.propertyID2, 0),
+    propertyOptionIDs2: parseCommaSeparatedIds(row.propertyOptionIDs2),
     toDelete: row.variationSKU.toUpperCase() === 'DELETE',
   }
 
   // Parse Product ID from Product ID column
-  if (row.productID !== '') {
-    const id = parseInt(row.productID, 10)
-    if (!isNaN(id)) {
-      variation.productID = id
-    }
+  const productId = parseId(row.productID)
+  if (productId !== null) {
+    variation.productID = productId
   }
 
   return variation

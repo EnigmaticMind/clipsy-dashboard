@@ -2,6 +2,7 @@
 
 import { getListing } from './etsyApi'
 import { convertListingsToCSV, downloadCSV } from './csvService'
+import { APP_VERSION } from '../constants/version'
 import { PreviewResponse } from './previewService'
 import { logger } from '../utils/logger'
 
@@ -57,9 +58,9 @@ export async function createBackupCSV(
     results: listingsToBackup,
   })
 
-  // Download backup with timestamp
+  // Download backup with timestamp and version
   const timestamp = new Date().toISOString().split('T')[0] // YYYY-MM-DD format
-  const filename = `etsy-backup-before-changes-${timestamp}.csv`
+  const filename = `clipsy-backup-v${APP_VERSION}-${timestamp}.csv`
   downloadCSV(csvContent, filename)
   
   logger.log(`Backup created: ${filename} (${listingsToBackup.length} listings)`)

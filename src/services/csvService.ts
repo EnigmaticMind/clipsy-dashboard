@@ -2,6 +2,9 @@
 // Ported from backend Go code
 
 import { ListingsResponse } from './etsyApi'
+import { findHeaderRowIndex } from '../utils/dataParsing'
+import { LISTING_HEADER_ROW, LISTING_COLUMN_COUNT } from './googleSheets/constants'
+import { APP_VERSION } from '../constants/version'
 
 // Decode HTML entities (works in service workers without DOM)
 function decodeHTMLEntities(s: string): string {
@@ -59,8 +62,8 @@ function decodeHTMLEntities(s: string): string {
 export function convertListingsToCSV(listings: ListingsResponse): string {
   const rows: string[][] = []
   
-  // Metadata rows (26 columns total - added Materials, Shipping Profile ID, Processing Min, Processing Max)
-  const emptyRow = Array(26).fill('')
+  // Metadata rows (using column count from constants)
+  const emptyRow = Array(LISTING_COLUMN_COUNT).fill('')
   
   rows.push([
     'INFO: This CSV contains your Etsy listings. For listings with variations, each variation appears on a separate row. Listing-level fields (Title, Description, Status, Tags, Materials, Shipping Profile ID, Processing Time) are only on the first row.',
@@ -85,35 +88,8 @@ export function convertListingsToCSV(listings: ListingsResponse): string {
   // Empty row
   rows.push(emptyRow)
   
-  // Header row - New user-friendly structure
-  rows.push([
-    'Listing ID',
-    'Title',
-    'Description',
-    'Status',
-    'Tags',
-    'Variation',  // User-friendly: "S / Arctic White" or "N/A"
-    'Property Name 1',  // e.g., "Sizes"
-    'Property Option 1',  // e.g., "S"
-    'Property Name 2',  // e.g., "Colors"
-    'Property Option 2',  // e.g., "Arctic White"
-    'Price',
-    'Currency Code',
-    'Quantity',
-    'SKU (DELETE=delete listing)',
-    'Variation Price',  // If price varies by variation
-    'Variation Quantity',  // If quantity varies by variation
-    'Variation SKU (DELETE=delete variation)',  // If SKU varies by variation
-    'Materials',  // Comma-separated list of materials
-    'Shipping Profile ID',  // Shipping profile ID
-    'Processing Min (days)',  // Minimum processing time in days
-    'Processing Max (days)',  // Maximum processing time in days
-    'Product ID (DO NOT EDIT)',
-    'Property ID 1 (DO NOT EDIT)',
-    'Property Option IDs 1 (DO NOT EDIT)',
-    'Property ID 2 (DO NOT EDIT)',
-    'Property Option IDs 2 (DO NOT EDIT)',
-  ])
+  // Header row - New user-friendly structure (imported from constants)
+  rows.push([...LISTING_HEADER_ROW])
   
   // Process each listing
   for (const listing of listings.results) {
@@ -285,13 +261,16 @@ export function convertListingsToCSV(listings: ListingsResponse): string {
 }
 
 // Download CSV as file
-export function downloadCSV(csvContent: string, filename: string = 'etsy-listings.csv'): void {
+export function downloadCSV(csvContent: string, filename?: string): void {
+  // Default filename includes version
+  const defaultFilename = `clipsy-listings-v${APP_VERSION}.csv`
+  const finalFilename = filename || defaultFilename
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
   const link = document.createElement('a')
   const url = URL.createObjectURL(blob)
   
   link.setAttribute('href', url)
-  link.setAttribute('download', filename)
+  link.setAttribute('download', finalFilename)
   link.style.visibility = 'hidden'
   
   document.body.appendChild(link)
@@ -322,15 +301,9 @@ export async function countCSVRows(file: File): Promise<number> {
       }
       
       // Find header row index
-      let headerRowIndex = -1
-      for (let i = 0; i < Math.min(lines.length, 10); i++) {
-        // Parse first column (simple CSV parsing for header detection)
-        const firstCol = lines[i].split(',')[0]?.trim().toLowerCase().replace(/"/g, '') || ''
-        if (firstCol === 'listing id' || (firstCol.includes('listing') && firstCol.includes('id'))) {
-          headerRowIndex = i
-          break
-        }
-      }
+      // Convert lines to 2D array for findHeaderRowIndex
+      const rows = lines.map(line => line.split(',').map(cell => cell.trim().replace(/"/g, '')))
+      let headerRowIndex = findHeaderRowIndex(rows, ['listing id'], 10)
       
       if (headerRowIndex === -1) {
         // No header found, assume first row is header
