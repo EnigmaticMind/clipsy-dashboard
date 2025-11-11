@@ -363,10 +363,8 @@ export async function fetchListings(
         }
       } else {
         logger.error('Error in batch promise:', settled.reason)
-        // Extract page number if possible
-        if (settled.value?.page) {
-          failedPages.push(settled.value.page)
-        }
+        // For rejected promises, we can't access settled.value
+        // The page number is lost, but we can still track that a failure occurred
       }
     }
     

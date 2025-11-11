@@ -3,8 +3,9 @@
 // Uses Measurement Protocol API (no external scripts needed, works with CSP)
 
 const GA_MEASUREMENT_ID = 'G-V5492WJDH1';
-const GA_API_ENDPOINT = 'https://www.google-analytics.com/mp/collect';
-const GA_DEBUG_ENDPOINT = 'https://www.google-analytics.com/debug/mp/collect';
+// Note: GA_API_ENDPOINT and GA_DEBUG_ENDPOINT are reserved for future use
+// const GA_API_ENDPOINT = 'https://www.google-analytics.com/mp/collect';
+// const GA_DEBUG_ENDPOINT = 'https://www.google-analytics.com/debug/mp/collect';
 
 // Check if we're in development mode
 const isDev =
@@ -78,9 +79,10 @@ async function sendToGA(
     // Use the collect endpoint (GET request works without API secret)
     const url = `https://www.google-analytics.com/g/collect?${params.toString()}`;
     
-    const response = await fetch(url, {
+    await fetch(url, {
       method: 'GET',
       mode: 'no-cors', // Required for cross-origin requests
+      // Note: With no-cors mode, we can't read the response, but the event should be sent
     });
 
     if (isDev) {

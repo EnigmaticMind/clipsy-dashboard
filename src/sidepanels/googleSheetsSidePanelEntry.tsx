@@ -5,7 +5,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ToastProvider } from '../contexts/ToastContext';
 import '../index.css';
-import GoogleSheetsSidePanel from './GoogleSheetsSidePanel';
+import GoogleSheetsSidePanel from './googleSheetsSidePanel';
 
 // Get current Google Sheet ID from URL
 async function getCurrentSheetId(): Promise<string | null> {

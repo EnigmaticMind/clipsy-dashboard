@@ -5,7 +5,6 @@ import {
   saveAIConfig,
   checkAIAvailability,
   getEngineDebugInfo,
-  type EngineDebugInfo,
 } from "../services/aiService";
 import type { AIConfig } from "../services/aiService";
 import {
@@ -39,8 +38,6 @@ export default function SettingsPage() {
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [debugInfo, setDebugInfo] = useState<EngineDebugInfo | null>(null);
-  const [loadingDebugInfo, setLoadingDebugInfo] = useState(false);
   const [googleSheetsConnected, setGoogleSheetsConnected] = useState(false);
   const [checkingGoogleSheets, setCheckingGoogleSheets] = useState(false);
   const [connectingGoogleSheets, setConnectingGoogleSheets] = useState(false);
@@ -181,14 +178,11 @@ export default function SettingsPage() {
   const loadDebugInfo = async () => {
     if (!isDev) return;
 
-    setLoadingDebugInfo(true);
     try {
-      const info = await getEngineDebugInfo();
-      setDebugInfo(info);
+      await getEngineDebugInfo();
+      // Debug info is loaded but not displayed in UI currently
     } catch (err) {
       console.error("Failed to load debug info:", err);
-    } finally {
-      setLoadingDebugInfo(false);
     }
   };
 
