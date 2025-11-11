@@ -126,8 +126,8 @@ export async function updateListingInventory(
         return propertyValues.sort((a, b) => a.property_id - b.property_id)
       }
       
-      // Sort by canonical order
-      return propertyValues.sort((a, b) => {
+      // Sort by canonical order - ensure exact match
+      const sorted = propertyValues.sort((a, b) => {
         const indexA = canonicalPropertyOrder.indexOf(a.property_id)
         const indexB = canonicalPropertyOrder.indexOf(b.property_id)
         
@@ -138,6 +138,32 @@ export async function updateListingInventory(
         
         return indexA - indexB
       })
+      
+      // Validate the sorted order matches canonical order
+      const sortedPropertyIds = sorted.map(pv => pv.property_id)
+      const expectedPropertyIds = canonicalPropertyOrder.filter(pid => 
+        sortedPropertyIds.includes(pid)
+      )
+      
+      if (JSON.stringify(sortedPropertyIds) !== JSON.stringify(expectedPropertyIds)) {
+        // Force exact match to canonical order
+        const reordered: any[] = []
+        for (const propID of canonicalPropertyOrder) {
+          const propData = sorted.find(pv => pv.property_id === propID)
+          if (propData) {
+            reordered.push(propData)
+          }
+        }
+        // Add any missing properties at the end
+        for (const propData of sorted) {
+          if (!reordered.find(pv => pv.property_id === propData.property_id)) {
+            reordered.push(propData)
+          }
+        }
+        return reordered
+      }
+      
+      return sorted
     }
 
     // Helper function to resolve property IDs and value IDs from property names/options
@@ -157,44 +183,48 @@ export async function updateListingInventory(
       }
 
       // If we don't have property name/option, can't resolve
-      if (!propertyName || !propertyOption || !existingListing) {
+      if (!propertyName || !propertyOption) {
         return null
       }
 
+      // If we have existingListing, search it first
+      // If not, we can still search other listings if enabled
       let foundPropertyID: number | null = null
       let foundValueIDs: number[] = []
 
-      // Look through existing products to find matching property
-      for (const product of existingListing.inventory.products || []) {
-        if (product.is_deleted || !product.property_values) continue
-        
-        for (const pv of product.property_values) {
-          // Match by property name (case-insensitive)
-          if (pv.property_name && pv.property_name.toLowerCase() === propertyName.toLowerCase()) {
-            // Found matching property
-            if (!foundPropertyID) {
-              foundPropertyID = pv.property_id
-            }
-            
-            // Try to find matching value
-            if (pv.values && pv.value_ids) {
-              const valueIndex = pv.values.findIndex(
-                v => v && v.toLowerCase() === propertyOption.toLowerCase()
-              )
-              if (valueIndex >= 0 && valueIndex < pv.value_ids.length) {
-                foundValueIDs.push(pv.value_ids[valueIndex])
+      if (existingListing) {
+        // Look through existing products to find matching property
+        for (const product of existingListing.inventory.products || []) {
+          if (product.is_deleted || !product.property_values) continue
+          
+          for (const pv of product.property_values) {
+            // Match by property name (case-insensitive)
+            if (pv.property_name && pv.property_name.toLowerCase() === propertyName.toLowerCase()) {
+              // Found matching property
+              if (!foundPropertyID) {
+                foundPropertyID = pv.property_id
+              }
+              
+              // Try to find matching value
+              if (pv.values && pv.value_ids) {
+                const valueIndex = pv.values.findIndex(
+                  v => v && v.toLowerCase() === propertyOption.toLowerCase()
+                )
+                if (valueIndex >= 0 && valueIndex < pv.value_ids.length) {
+                  foundValueIDs.push(pv.value_ids[valueIndex])
+                }
               }
             }
           }
         }
       }
 
-      // If we found the property ID but not the value ID, search other listings if enabled
-      if (foundPropertyID && foundValueIDs.length === 0 && searchOtherListings && shopID) {
+      // If we found the property ID but not the value ID, OR if we didn't find the property ID at all,
+      // search other listings if enabled
+      if ((!foundPropertyID || foundValueIDs.length === 0) && searchOtherListings && shopID) {
         try {
           logger.log(`Searching other listings in shop ${shopID} for property "${propertyName}" value "${propertyOption}"...`)
           // Fetch a few listings with variations to search (try multiple states)
-          // Etsy API doesn't accept comma-separated states, so we'll try each state separately
           let searchData: any = { results: [] }
           
           for (const state of ['active', 'draft', 'inactive']) {
@@ -220,8 +250,8 @@ export async function updateListingInventory(
           
           if (searchData.results && Array.isArray(searchData.results)) {
             for (const otherListing of searchData.results) {
-              // Skip the current listing
-              if (otherListing.listing_id === listingID) continue
+              // Skip the current listing if we have one
+              if (existingListing && otherListing.listing_id === listingID) continue
               
               if (!otherListing.has_variations || !otherListing.inventory?.products) continue
               
@@ -229,26 +259,34 @@ export async function updateListingInventory(
                 if (product.is_deleted || !product.property_values) continue
                 
                 for (const pv of product.property_values) {
-                  // Match by property name and property ID
-                  if (pv.property_name && 
-                      pv.property_name.toLowerCase() === propertyName.toLowerCase() &&
-                      pv.property_id === foundPropertyID) {
-                    // Try to find matching value
-                    if (pv.values && pv.value_ids) {
-                      const valueIndex = pv.values.findIndex(
-                        (v: string) => v && v.toLowerCase() === propertyOption.toLowerCase()
-                      )
-                      if (valueIndex >= 0 && valueIndex < pv.value_ids.length) {
-                        foundValueIDs.push(pv.value_ids[valueIndex])
-                        logger.log(`Found value ID ${pv.value_ids[valueIndex]} for "${propertyOption}" in listing ${otherListing.listing_id}`)
-                        break // Found it, no need to continue searching
+                  // Match by property name (case-insensitive)
+                  if (pv.property_name && pv.property_name.toLowerCase() === propertyName.toLowerCase()) {
+                    // Found matching property
+                    if (!foundPropertyID) {
+                      foundPropertyID = pv.property_id
+                      logger.log(`Found property ID ${foundPropertyID} for "${propertyName}" in listing ${otherListing.listing_id}`)
+                    }
+                    
+                    // If we already have the property ID, only search for value IDs
+                    // If we don't have it yet, we can use this listing's property ID
+                    if (foundPropertyID === pv.property_id) {
+                      // Try to find matching value
+                      if (pv.values && pv.value_ids) {
+                        const valueIndex = pv.values.findIndex(
+                          (v: string) => v && v.toLowerCase() === propertyOption.toLowerCase()
+                        )
+                        if (valueIndex >= 0 && valueIndex < pv.value_ids.length) {
+                          foundValueIDs.push(pv.value_ids[valueIndex])
+                          logger.log(`Found value ID ${pv.value_ids[valueIndex]} for "${propertyOption}" in listing ${otherListing.listing_id}`)
+                          break // Found it, no need to continue searching
+                        }
                       }
                     }
                   }
                 }
-                if (foundValueIDs.length > 0) break // Found it, exit product loop
+                if (foundPropertyID && foundValueIDs.length > 0) break // Found it, exit product loop
               }
-              if (foundValueIDs.length > 0) break // Found it, exit listing loop
+              if (foundPropertyID && foundValueIDs.length > 0) break // Found it, exit listing loop
             }
           }
         } catch (error) {
@@ -282,6 +320,67 @@ export async function updateListingInventory(
       return null
     }
 
+    // Helper function to fetch all property values for a property ID from the shop
+    async function fetchAllPropertyValuesFromShop(
+      propertyID: number,
+      propertyName: string
+    ): Promise<Map<number, { valueID: number; value: string }>> {
+      const valueMap = new Map<number, { valueID: number; value: string }>()
+      
+      if (!shopID || propertyID === 0) {
+        return valueMap
+      }
+      
+      try {
+        logger.log(`Fetching all property values for ${propertyName} (ID: ${propertyID}) from shop ${shopID}...`)
+        
+        // Fetch listings from multiple states to get all property values
+        let allListings: any[] = []
+        
+        for (const state of ['active', 'draft', 'inactive']) {
+          try {
+            const searchResponse = await makeEtsyRequest(
+              'GET',
+              `/application/shops/${shopID}/listings?limit=100&includes=Inventory&state=${state}`
+            )
+            const stateData = await searchResponse.json()
+            if (stateData.results && Array.isArray(stateData.results)) {
+              allListings.push(...stateData.results)
+            }
+          } catch (error) {
+            logger.warn(`Error fetching listings with state ${state}:`, error)
+          }
+        }
+        
+        // Extract all unique property values for this property ID
+        for (const listing of allListings) {
+          if (!listing.has_variations || !listing.inventory?.products) continue
+          
+          for (const product of listing.inventory.products) {
+            if (product.is_deleted || !product.property_values) continue
+            
+            for (const pv of product.property_values) {
+              if (pv.property_id === propertyID && pv.value_ids && pv.values) {
+                for (let i = 0; i < Math.min(pv.value_ids.length, pv.values.length); i++) {
+                  const valueID = pv.value_ids[i]
+                  const value = pv.values[i]
+                  if (!valueMap.has(valueID)) {
+                    valueMap.set(valueID, { valueID, value })
+                  }
+                }
+              }
+            }
+          }
+        }
+        
+        logger.log(`Found ${valueMap.size} unique property values for ${propertyName} (ID: ${propertyID})`)
+        return valueMap
+      } catch (error) {
+        logger.warn(`Error fetching property values from shop:`, error)
+        return valueMap
+      }
+    }
+
     // First pass: collect all variations from CSV and track property-level fields
     for (const variation of listing.variations) {
       if (variation.toDelete) {
@@ -303,38 +402,86 @@ export async function updateListingInventory(
 
       // Resolve property IDs if missing (for new variations)
       let resolvedProp1 = { propertyID: variation.propertyID1, valueIDs: variation.propertyOptionIDs1, hasValueIDs: variation.propertyOptionIDs1.length > 0 }
-      if (variation.propertyID1 === 0 && variation.propertyName1 !== '' && variation.propertyOption1 !== '') {
-        const resolved = await resolvePropertyIDs(
-          variation.propertyName1,
-          variation.propertyOption1,
-          variation.propertyID1,
-          variation.propertyOptionIDs1,
-          existingListing,
-          true // Search other listings if not found
-        )
-        if (resolved) {
-          resolvedProp1 = resolved
-          if (resolved.hasValueIDs) {
-            logger.log(`Resolved property 1: ${variation.propertyName1}/${variation.propertyOption1} -> ID ${resolved.propertyID}, value IDs ${resolved.valueIDs.join(',')}`)
+      let inferredPropertyName1 = variation.propertyName1
+      if (variation.propertyID1 === 0 && variation.propertyOption1 !== '') {
+        // If property name is missing, try to infer it from existing listing
+        if (!inferredPropertyName1 && existingListing) {
+          // Try to find property name from existing variations
+          for (const product of existingListing.inventory.products || []) {
+            if (product.is_deleted || !product.property_values) continue
+            for (const pv of product.property_values) {
+              if (pv.property_name) {
+                inferredPropertyName1 = pv.property_name
+                break
+              }
+            }
+            if (inferredPropertyName1) break
           }
+        }
+        
+        // Always search other listings if we have a property name, even if existingListing is null
+        if (inferredPropertyName1) {
+          const resolved = await resolvePropertyIDs(
+            inferredPropertyName1,
+            variation.propertyOption1,
+            variation.propertyID1,
+            variation.propertyOptionIDs1,
+            existingListing,
+            true // Always search other listings
+          )
+          if (resolved) {
+            resolvedProp1 = resolved
+            if (resolved.hasValueIDs) {
+              logger.log(`Resolved property 1: ${inferredPropertyName1}/${variation.propertyOption1} -> ID ${resolved.propertyID}, value IDs ${resolved.valueIDs.join(',')}`)
+            } else {
+              logger.log(`Resolved property 1: ${inferredPropertyName1}/${variation.propertyOption1} -> ID ${resolved.propertyID} (value IDs not found, will try without them)`)
+            }
+          } else {
+            logger.warn(`Could not resolve property ID for "${variation.propertyOption1}" with property name "${inferredPropertyName1}"`)
+          }
+        } else {
+          logger.warn(`Cannot resolve property ID for "${variation.propertyOption1}" - property name is missing and cannot be inferred`)
         }
       }
 
+      // Similar fix for property 2
       let resolvedProp2 = { propertyID: variation.propertyID2, valueIDs: variation.propertyOptionIDs2, hasValueIDs: variation.propertyOptionIDs2.length > 0 }
-      if (variation.propertyID2 === 0 && variation.propertyName2 !== '' && variation.propertyOption2 !== '') {
-        const resolved = await resolvePropertyIDs(
-          variation.propertyName2,
-          variation.propertyOption2,
-          variation.propertyID2,
-          variation.propertyOptionIDs2,
-          existingListing,
-          true // Search other listings if not found
-        )
-        if (resolved) {
-          resolvedProp2 = resolved
-          if (resolved.hasValueIDs) {
-            logger.log(`Resolved property 2: ${variation.propertyName2}/${variation.propertyOption2} -> ID ${resolved.propertyID}, value IDs ${resolved.valueIDs.join(',')}`)
+      let inferredPropertyName2 = variation.propertyName2
+      if (variation.propertyID2 === 0 && variation.propertyOption2 !== '') {
+        // If property name is missing, try to infer it from existing listing
+        if (!inferredPropertyName2 && existingListing) {
+          // Try to find property name from existing variations (use second property if available)
+          for (const product of existingListing.inventory.products || []) {
+            if (product.is_deleted || !product.property_values) continue
+            if (product.property_values.length > 1 && product.property_values[1].property_name) {
+              inferredPropertyName2 = product.property_values[1].property_name
+              break
+            }
           }
+        }
+        
+        // Always search other listings if we have a property name, even if existingListing is null
+        if (inferredPropertyName2) {
+          const resolved = await resolvePropertyIDs(
+            inferredPropertyName2,
+            variation.propertyOption2,
+            variation.propertyID2,
+            variation.propertyOptionIDs2,
+            existingListing,
+            true
+          )
+          if (resolved) {
+            resolvedProp2 = resolved
+            if (resolved.hasValueIDs) {
+              logger.log(`Resolved property 2: ${inferredPropertyName2}/${variation.propertyOption2} -> ID ${resolved.propertyID}, value IDs ${resolved.valueIDs.join(',')}`)
+            } else {
+              logger.log(`Resolved property 2: ${inferredPropertyName2}/${variation.propertyOption2} -> ID ${resolved.propertyID} (value IDs not found, will try without them)`)
+            }
+          } else {
+            logger.warn(`Could not resolve property ID for "${variation.propertyOption2}" with property name "${inferredPropertyName2}"`)
+          }
+        } else {
+          logger.warn(`Cannot resolve property ID for "${variation.propertyOption2}" - property name is missing and cannot be inferred`)
         }
       }
 
@@ -386,23 +533,67 @@ export async function updateListingInventory(
         }
       }
 
-      // Build property values array - add in canonical order if available, otherwise add in CSV order
+      // Build property values array - MUST be in canonical order for Etsy API
       const propertyValues: any[] = []
+      let hasMissingProperties = false
+      
+      // If we have a canonical order, we MUST use it and ensure all properties are in that exact order
       if (canonicalPropertyOrder.length > 0) {
-        // Add properties in canonical order
+        // Build a map of property_id -> property_data for easy lookup
+        const propDataMap = new Map<number, any>()
+        if (prop1Data) propDataMap.set(prop1Data.property_id, prop1Data)
+        if (prop2Data) propDataMap.set(prop2Data.property_id, prop2Data)
+        
+        // Add properties in EXACT canonical order - this is critical for Etsy API
         for (const propID of canonicalPropertyOrder) {
-          if (prop1Data && prop1Data.property_id === propID) {
-            propertyValues.push(prop1Data)
-          } else if (prop2Data && prop2Data.property_id === propID) {
-            propertyValues.push(prop2Data)
+          const propData = propDataMap.get(propID)
+          if (propData) {
+            propertyValues.push(propData)
+          } else {
+            // Property is in canonical order but not in CSV - need to add it with a default value
+            // Get default value from existing listing
+            let defaultPropertyValue: any = null
+            
+            if (existingListing && existingListing.inventory.products.length > 0) {
+              // Find first existing product with this property
+              for (const existingProduct of existingListing.inventory.products) {
+                if (existingProduct.is_deleted || !existingProduct.property_values) continue
+                
+                const existingProp = existingProduct.property_values.find(
+                  (pv: any) => pv.property_id === propID
+                )
+                
+                if (existingProp && existingProp.values && existingProp.values.length > 0) {
+                  // Use the first value from the first existing product
+                  defaultPropertyValue = {
+                    property_id: propID,
+                    property_name: existingProp.property_name || '',
+                    value_ids: existingProp.value_ids && existingProp.value_ids.length > 0 
+                      ? [existingProp.value_ids[0]] 
+                      : [],
+                    values: [existingProp.values[0]]
+                  }
+                  hasMissingProperties = true
+                  logger.log(`Adding missing property ${existingProp.property_name || propID} with default value "${existingProp.values[0]}" (not in CSV)`)
+                  break
+                }
+              }
+            }
+            
+            if (defaultPropertyValue) {
+              propertyValues.push(defaultPropertyValue)
+            } else {
+              logger.warn(`Property ${propID} is in canonical order but not found in CSV and no default value available from existing listing`)
+            }
           }
         }
-        // Add any properties not in canonical order at the end
-        if (prop1Data && !canonicalPropertyOrder.includes(prop1Data.property_id)) {
-          propertyValues.push(prop1Data)
-        }
-        if (prop2Data && !canonicalPropertyOrder.includes(prop2Data.property_id)) {
-          propertyValues.push(prop2Data)
+        
+        // Add any properties not in canonical order at the end (shouldn't happen, but handle it)
+        for (const [propID, propData] of propDataMap) {
+          if (!canonicalPropertyOrder.includes(propID)) {
+            logger.warn(`Property ${propID} not in canonical order ${canonicalPropertyOrder.join(', ')}. Adding at end.`)
+            propertyValues.push(propData)
+          }
         }
       } else {
         // No canonical order - add in CSV order (property1, then property2)
@@ -412,12 +603,23 @@ export async function updateListingInventory(
         if (prop2Data) {
           propertyValues.push(prop2Data)
         }
+        
+        // If we don't have a canonical order yet, establish one from the first variation
+        // This ensures all subsequent variations use the same order
+        if (canonicalPropertyOrder.length === 0 && propertyValues.length > 0) {
+          canonicalPropertyOrder.push(...propertyValues.map(pv => pv.property_id))
+          logger.log(`Establishing canonical property order from first variation: ${canonicalPropertyOrder.join(', ')}`)
+        }
       }
+      
+      // Final validation: ensure property values are in the correct order
+      // This is critical - Etsy requires all products to have properties in the same order
+      // We'll do the sorting and validation later, after we've built the complete propertyValues array
 
       const offering: any = {
         price: 0, // Default price as float (inventory endpoint expects float)
         quantity: 0,
-        is_enabled: true, // Always enabled
+        is_enabled: !hasMissingProperties, // Disable if we had to add missing properties
       }
 
       // Get readiness_state_id from existing product if updating, or from first existing offering, or use default
@@ -469,9 +671,28 @@ export async function updateListingInventory(
       if (variation.propertyPrice !== null) {
         // Inventory endpoint expects price as a float (e.g., 45.99)
         offering.price = variation.propertyPrice
+      } else if (hasMissingProperties) {
+        // If we have missing properties, use price from first existing product
+        if (existingListing && existingListing.inventory.products.length > 0) {
+          const firstProduct = existingListing.inventory.products.find((p: any) => !p.is_deleted)
+          if (firstProduct && firstProduct.offerings.length > 0) {
+            const firstOffering = firstProduct.offerings.find((o: any) => !o.is_deleted)
+            if (firstOffering && firstOffering.price) {
+              if (typeof firstOffering.price === 'object' && firstOffering.price.amount !== undefined) {
+                offering.price = firstOffering.price.amount / (firstOffering.price.divisor || 1)
+              } else if (typeof firstOffering.price === 'number') {
+                offering.price = firstOffering.price
+              }
+            }
+          }
+        }
       }
+      
       if (variation.propertyQuantity !== null) {
         offering.quantity = variation.propertyQuantity
+      } else if (hasMissingProperties) {
+        // If we have missing properties, set quantity to 0 (hidden variation)
+        offering.quantity = 0
       } else {
         // Etsy requires at least one offering to have quantity > 0
         // For new variations, default to 1 if quantity is not specified
@@ -500,8 +721,38 @@ export async function updateListingInventory(
       }
 
       // Property values are already in canonical order (or CSV order if no canonical order exists)
-      // Use them as-is - sortPropertyValues is a safeguard but shouldn't be needed
-      const sortedPropertyValues = sortPropertyValues(propertyValues)
+      // Sort and validate to ensure correct order
+      let sortedPropertyValues = sortPropertyValues(propertyValues)
+      
+      // Double-check that the sorted order matches canonical order exactly
+      if (canonicalPropertyOrder.length > 0) {
+        const actualOrder = sortedPropertyValues.map(pv => pv.property_id)
+        const expectedOrder = canonicalPropertyOrder.filter(pid => 
+          sortedPropertyValues.some(pv => pv.property_id === pid)
+        )
+        
+        if (JSON.stringify(actualOrder) !== JSON.stringify(expectedOrder)) {
+          logger.warn(`Property order mismatch after sorting. Expected: [${expectedOrder.join(', ')}], Got: [${actualOrder.join(', ')}]. Reordering to match canonical order.`)
+          
+          // Force reorder to match canonical order exactly
+          const reordered: any[] = []
+          for (const propID of canonicalPropertyOrder) {
+            const propData = sortedPropertyValues.find(pv => pv.property_id === propID)
+            if (propData) {
+              reordered.push(propData)
+            }
+          }
+          // Add any properties not in canonical order at the end (shouldn't happen)
+          for (const propData of sortedPropertyValues) {
+            if (!reordered.find(pv => pv.property_id === propData.property_id)) {
+              reordered.push(propData)
+            }
+          }
+          
+          // Replace with reordered version
+          sortedPropertyValues = reordered
+        }
+      }
 
       const product: any = {
         sku: variation.propertySKU,
@@ -524,429 +775,151 @@ export async function updateListingInventory(
       csvVariationsBySignature.set(signature, variation)
     }
     
-    // Third pass: Generate missing combinations for new property values
-    // When a new property value is added (e.g., "3XL"), create all combinations with existing property values
-    // Mark combinations not explicitly in CSV as is_enabled: false
-    if (existingListing !== null && existingListing.inventory.products.length > 0 && canonicalPropertyOrder.length > 0) {
-      // Collect all unique property values from existing listing for each property
-      const existingPropertyValues = new Map<number, Map<number, { valueID: number; value: string }>>()
+    // After processing all CSV variations, if we have property IDs, fetch ALL their values from the shop
+    // and generate all missing combinations
+    if (canonicalPropertyOrder.length > 0 && shopID) {
+      const allPropertyValuesMap = new Map<number, Map<number, { valueID: number; value: string }>>()
       
-      for (const product of existingListing.inventory.products) {
-        if (product.is_deleted || !product.property_values) continue
-        
-        for (const pv of product.property_values) {
-          if (!existingPropertyValues.has(pv.property_id)) {
-            existingPropertyValues.set(pv.property_id, new Map())
+      // Fetch all property values for each property in canonical order
+      for (const propID of canonicalPropertyOrder) {
+        // Find property name from existing listing or CSV
+        let propertyName = ''
+        if (existingListing && existingListing.inventory.products.length > 0) {
+          const firstProduct = existingListing.inventory.products.find((p: any) => !p.is_deleted)
+          if (firstProduct && firstProduct.property_values) {
+            const prop = firstProduct.property_values.find((pv: any) => pv.property_id === propID)
+            if (prop) propertyName = prop.property_name || ''
           }
-          const valueMap = existingPropertyValues.get(pv.property_id)!
-          
-          if (pv.value_ids && pv.values) {
-            for (let i = 0; i < Math.min(pv.value_ids.length, pv.values.length); i++) {
-              if (!valueMap.has(pv.value_ids[i])) {
-                valueMap.set(pv.value_ids[i], {
-                  valueID: pv.value_ids[i],
-                  value: pv.values[i]
-                })
-              }
+        }
+        
+        // Also check CSV variations for property name
+        if (!propertyName) {
+          for (const variation of listing.variations) {
+            if (variation.toDelete) continue
+            if (variation.propertyID1 === propID && variation.propertyName1) {
+              propertyName = variation.propertyName1
+              break
             }
+            if (variation.propertyID2 === propID && variation.propertyName2) {
+              propertyName = variation.propertyName2
+              break
+            }
+          }
+        }
+        
+        if (propertyName) {
+          const values = await fetchAllPropertyValuesFromShop(propID, propertyName)
+          if (values.size > 0) {
+            allPropertyValuesMap.set(propID, values)
+            logger.log(`Fetched ${values.size} values for property ${propertyName} (ID: ${propID})`)
           }
         }
       }
       
-      // Collect new property values from CSV (values that don't exist in existing listing)
-      // Track both value IDs (when found) and value text (when value ID not found)
-      const newPropertyValues = new Map<number, Set<number>>() // property_id -> Set of value_ids
-      const newPropertyValuesByText = new Map<number, Map<string, string>>() // property_id -> Map of value_text -> property_option_text
-      
-      // Also need to resolve property IDs for variations that might not have been resolved yet
-      for (const variation of listing.variations) {
-        if (variation.toDelete) continue
+      // Generate all combinations of property values
+      if (allPropertyValuesMap.size > 0) {
+        const allCombinations: Array<Array<{ property_id: number; value_id: number; value: string }>> = []
         
-        // Check property 1 - need to resolve if missing
-        let prop1ID = variation.propertyID1
-        let prop1ValueIDs = variation.propertyOptionIDs1
-        
-        if (prop1ID === 0 && variation.propertyName1 !== '' && variation.propertyOption1 !== '') {
-          // Try to resolve from existing listing
-          for (const product of existingListing.inventory.products || []) {
-            if (product.is_deleted || !product.property_values) continue
-            for (const pv of product.property_values) {
-              if (pv.property_name && pv.property_name.toLowerCase() === variation.propertyName1.toLowerCase()) {
-                prop1ID = pv.property_id
-                break
-              }
-            }
-            if (prop1ID > 0) break
-          }
-          
-          // If still not found, try to get value ID from other listings
-          if (prop1ID > 0 && prop1ValueIDs.length === 0 && shopID) {
-            const resolved = await resolvePropertyIDs(
-              variation.propertyName1,
-              variation.propertyOption1,
-              prop1ID,
-              prop1ValueIDs,
-              existingListing,
-              true
-            )
-            if (resolved) {
-              if (resolved.hasValueIDs) {
-                prop1ValueIDs = resolved.valueIDs
-              } else {
-                // Property ID found but value ID not found - track by text
-                if (!newPropertyValuesByText.has(prop1ID)) {
-                  newPropertyValuesByText.set(prop1ID, new Map())
-                }
-                newPropertyValuesByText.get(prop1ID)!.set(variation.propertyOption1.toLowerCase(), variation.propertyOption1)
-              }
-            }
-          }
-        }
-        
-        // Check if this is a new property value (by value ID or by text)
-        if (prop1ID > 0) {
-          const existingValues = existingPropertyValues.get(prop1ID)
-          
-          if (prop1ValueIDs.length > 0) {
-            // Check by value ID
-            if (existingValues) {
-              for (const valueID of prop1ValueIDs) {
-                if (!existingValues.has(valueID)) {
-                  if (!newPropertyValues.has(prop1ID)) {
-                    newPropertyValues.set(prop1ID, new Set())
-                  }
-                  newPropertyValues.get(prop1ID)!.add(valueID)
-                }
-              }
-            } else {
-              // Property doesn't exist in existing listing - all values are new
-              if (!newPropertyValues.has(prop1ID)) {
-                newPropertyValues.set(prop1ID, new Set())
-              }
-              for (const valueID of prop1ValueIDs) {
-                newPropertyValues.get(prop1ID)!.add(valueID)
-              }
-            }
-          } else if (variation.propertyOption1 !== '') {
-            // No value ID found - check by text if it's a new value
-            if (existingValues) {
-              // Check if this value text exists in existing values
-              const valueTextExists = Array.from(existingValues.values()).some(
-                v => v.value.toLowerCase() === variation.propertyOption1.toLowerCase()
-              )
-              if (!valueTextExists) {
-                if (!newPropertyValuesByText.has(prop1ID)) {
-                  newPropertyValuesByText.set(prop1ID, new Map())
-                }
-                newPropertyValuesByText.get(prop1ID)!.set(variation.propertyOption1.toLowerCase(), variation.propertyOption1)
-              }
-            } else {
-              // Property doesn't exist - all values are new
-              if (!newPropertyValuesByText.has(prop1ID)) {
-                newPropertyValuesByText.set(prop1ID, new Map())
-              }
-              newPropertyValuesByText.get(prop1ID)!.set(variation.propertyOption1.toLowerCase(), variation.propertyOption1)
-            }
-          }
-        }
-        
-        // Check property 2 - need to resolve if missing
-        let prop2ID = variation.propertyID2
-        let prop2ValueIDs = variation.propertyOptionIDs2
-        
-        if (prop2ID === 0 && variation.propertyName2 !== '' && variation.propertyOption2 !== '') {
-          // Try to resolve from existing listing
-          for (const product of existingListing.inventory.products || []) {
-            if (product.is_deleted || !product.property_values) continue
-            for (const pv of product.property_values) {
-              if (pv.property_name && pv.property_name.toLowerCase() === variation.propertyName2.toLowerCase()) {
-                prop2ID = pv.property_id
-                break
-              }
-            }
-            if (prop2ID > 0) break
-          }
-          
-          // If still not found, try to get value ID from other listings
-          if (prop2ID > 0 && prop2ValueIDs.length === 0 && shopID) {
-            const resolved = await resolvePropertyIDs(
-              variation.propertyName2,
-              variation.propertyOption2,
-              prop2ID,
-              prop2ValueIDs,
-              existingListing,
-              true
-            )
-            if (resolved) {
-              if (resolved.hasValueIDs) {
-                prop2ValueIDs = resolved.valueIDs
-              } else {
-                // Property ID found but value ID not found - track by text
-                if (!newPropertyValuesByText.has(prop2ID)) {
-                  newPropertyValuesByText.set(prop2ID, new Map())
-                }
-                newPropertyValuesByText.get(prop2ID)!.set(variation.propertyOption2.toLowerCase(), variation.propertyOption2)
-              }
-            }
-          }
-        }
-        
-        // Check if this is a new property value (by value ID or by text)
-        if (prop2ID > 0) {
-          const existingValues = existingPropertyValues.get(prop2ID)
-          
-          if (prop2ValueIDs.length > 0) {
-            // Check by value ID
-            if (existingValues) {
-              for (const valueID of prop2ValueIDs) {
-                if (!existingValues.has(valueID)) {
-                  if (!newPropertyValues.has(prop2ID)) {
-                    newPropertyValues.set(prop2ID, new Set())
-                  }
-                  newPropertyValues.get(prop2ID)!.add(valueID)
-                }
-              }
-            } else {
-              // Property doesn't exist in existing listing - all values are new
-              if (!newPropertyValues.has(prop2ID)) {
-                newPropertyValues.set(prop2ID, new Set())
-              }
-              for (const valueID of prop2ValueIDs) {
-                newPropertyValues.get(prop2ID)!.add(valueID)
-              }
-            }
-          } else if (variation.propertyOption2 !== '') {
-            // No value ID found - check by text if it's a new value
-            if (existingValues) {
-              // Check if this value text exists in existing values
-              const valueTextExists = Array.from(existingValues.values()).some(
-                v => v.value.toLowerCase() === variation.propertyOption2.toLowerCase()
-              )
-              if (!valueTextExists) {
-                if (!newPropertyValuesByText.has(prop2ID)) {
-                  newPropertyValuesByText.set(prop2ID, new Map())
-                }
-                newPropertyValuesByText.get(prop2ID)!.set(variation.propertyOption2.toLowerCase(), variation.propertyOption2)
-              }
-            } else {
-              // Property doesn't exist - all values are new
-              if (!newPropertyValuesByText.has(prop2ID)) {
-                newPropertyValuesByText.set(prop2ID, new Map())
-              }
-              newPropertyValuesByText.get(prop2ID)!.set(variation.propertyOption2.toLowerCase(), variation.propertyOption2)
-            }
-          }
-        }
-      }
-      
-      // If we have new property values (by ID or by text), generate all missing combinations
-      // According to Etsy's rules: "All combinations of property values must be supplied"
-      // Reference: https://help.nembol.com/troubleshooting/errors-with-listings/etsy-property-values-must-be-supplied/
-      if (newPropertyValues.size > 0 || newPropertyValuesByText.size > 0) {
-        logger.log(`Detected new property values. Generating all combinations (Etsy requires all combinations to be supplied)...`)
-        
-        // Get all property IDs in canonical order
-        const propIDs = canonicalPropertyOrder.length > 0 
-          ? canonicalPropertyOrder 
-          : Array.from(existingPropertyValues.keys())
-        
-        // Generate all combinations
-        const allCombinations: Array<Array<{ property_id: number; value_id: number | null; value: string }>> = []
-        
-        function generateCombinations(
-          current: Array<{ property_id: number; value_id: number | null; value: string }>,
+        function generateAllCombinations(
+          current: Array<{ property_id: number; value_id: number; value: string }>,
           propIndex: number
         ) {
-          if (propIndex >= propIDs.length) {
-            // Only add combination if it has ALL properties (required by Etsy)
-            if (current.length === propIDs.length) {
+          if (propIndex >= canonicalPropertyOrder.length) {
+            if (current.length > 0) {
               allCombinations.push([...current])
             }
             return
           }
           
-          const propID = propIDs[propIndex]
-          const values = existingPropertyValues.get(propID)
+          const propID = canonicalPropertyOrder[propIndex]
+          const values = allPropertyValuesMap.get(propID)
           
-          // CRITICAL: All products must have the same properties in the same order
-          // If a property has no values, we cannot create combinations with it
-          // Skip this property only if it doesn't exist in existing listing at all
-          if (!values || values.size === 0) {
-            // If this property doesn't exist in existing listing, we can't include it
-            // This means we should only generate combinations for properties that exist
-            // But we need to ensure ALL combinations have the same properties
-            // So if a property has no values, we skip generating combinations entirely
-            logger.warn(`Property ${propID} has no values in existing listing. Skipping combination generation for this property.`)
-            return
-          }
-          
-          // If this property has new values (by ID or by text), include both existing and new values
-          const newValues = newPropertyValues.get(propID)
-          const newValuesByText = newPropertyValuesByText.get(propID)
-          const allValues = new Map(values)
-          
-          // Add new values with value IDs
-          if (newValues) {
-            for (const variation of listing.variations) {
-              if (variation.toDelete) continue
-              
-              if (variation.propertyID1 === propID && variation.propertyOptionIDs1.length > 0) {
-                for (let i = 0; i < variation.propertyOptionIDs1.length; i++) {
-                  if (newValues.has(variation.propertyOptionIDs1[i])) {
-                    allValues.set(variation.propertyOptionIDs1[i], {
-                      valueID: variation.propertyOptionIDs1[i],
-                      value: variation.propertyOption1
-                    })
-                  }
-                }
-              }
-              
-              if (variation.propertyID2 === propID && variation.propertyOptionIDs2.length > 0) {
-                for (let i = 0; i < variation.propertyOptionIDs2.length; i++) {
-                  if (newValues.has(variation.propertyOptionIDs2[i])) {
-                    allValues.set(variation.propertyOptionIDs2[i], {
-                      valueID: variation.propertyOptionIDs2[i],
-                      value: variation.propertyOption2
-                    })
-                  }
-                }
-              }
+          if (values && values.size > 0) {
+            for (const { valueID, value } of values.values()) {
+              generateAllCombinations([...current, { property_id: propID, value_id: valueID, value }], propIndex + 1)
             }
-          }
-          
-          // Add new values without value IDs (tracked by text)
-          if (newValuesByText) {
-            for (const [valueTextKey, valueText] of newValuesByText.entries()) {
-              // Check if we already have this value (by text match)
-              const alreadyExists = Array.from(allValues.values()).some(
-                v => v.value.toLowerCase() === valueTextKey
-              )
-              if (!alreadyExists) {
-                // Use a placeholder value ID of 0 (we'll try to create without value_id)
-                // We need a unique key, so use a negative number based on hash of text
-                const placeholderID = -Math.abs(valueTextKey.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0))
-                allValues.set(placeholderID, {
-                  valueID: placeholderID, // Placeholder - will be null in final product
-                  value: valueText
-                })
-              }
-            }
-          }
-          
-          // Generate combinations for this property
-          // Each combination must include a value for this property
-          for (const valueData of allValues.values()) {
-            current.push({
-              property_id: propID,
-              value_id: valueData.valueID < 0 ? null : valueData.valueID, // null if placeholder
-              value: valueData.value
-            })
-            generateCombinations(current, propIndex + 1)
-            current.pop()
+          } else {
+            // Property has no values - skip it
+            generateAllCombinations(current, propIndex + 1)
           }
         }
         
-        generateCombinations([], 0)
+        generateAllCombinations([], 0)
+        logger.log(`Generated ${allCombinations.length} total combinations from shop property values`)
         
-        // Filter to only combinations that include at least one new property value
-        const combinationsWithNewValues = allCombinations.filter(combo => {
-          return combo.some(pv => {
-            // Check if this is a new value (by ID or by text)
-            const newValues = newPropertyValues.get(pv.property_id)
-            const newValuesByText = newPropertyValuesByText.get(pv.property_id)
-            
-            if (pv.value_id !== null && newValues && newValues.has(pv.value_id)) {
-              return true
-            }
-            if (pv.value_id === null && newValuesByText && newValuesByText.has(pv.value.toLowerCase())) {
-              return true
-            }
-            return false
-          })
-        })
+        // Create signatures for CSV variations to check which combinations are already in CSV
+        const csvVariationSignatures = new Set<string>()
+        for (const variation of listing.variations) {
+          if (variation.toDelete) continue
+          
+          const sig: number[] = []
+          if (variation.propertyID1 > 0 && variation.propertyOptionIDs1.length > 0) {
+            sig.push(...variation.propertyOptionIDs1)
+          }
+          if (variation.propertyID2 > 0 && variation.propertyOptionIDs2.length > 0) {
+            sig.push(...variation.propertyOptionIDs2)
+          }
+          if (sig.length > 0) {
+            csvVariationSignatures.add(JSON.stringify(sig.sort()))
+          }
+        }
         
-        // Create products for combinations not explicitly in CSV
-        for (const combo of combinationsWithNewValues) {
+        // Create products for combinations not in CSV (mark as hidden)
+        for (const combo of allCombinations) {
           // Create signature for this combination
-          // Use value_id if available, otherwise use value text for matching
-          const comboSignature = JSON.stringify(combo
-            .sort((a, b) => a.property_id - b.property_id)
-            .map(pv => ({
-              property_id: pv.property_id,
-              value_ids: pv.value_id !== null ? [pv.value_id].sort() : [],
-              value_text: pv.value.toLowerCase() // Include text for matching when value_id is null
-            })))
+          const comboValueIDs = combo.map(c => c.value_id).sort()
+          const comboSignature = JSON.stringify(comboValueIDs)
           
-          // Skip if this combination is already in CSV
-          if (csvVariationsBySignature.has(comboSignature)) {
-            continue
+          // Check if this combination is already in CSV
+          if (csvVariationSignatures.has(comboSignature)) {
+            continue // Already handled by CSV processing
           }
           
-          // Check if already in products array
-          // Match by property_id and either value_ids or value text
-          const alreadyInProducts = products.some(p => {
-            const pSig = JSON.stringify(sortPropertyValues(p.property_values)
-              .map((pv: any) => ({
-                property_id: pv.property_id,
-                value_ids: (pv.value_ids || []).sort(),
-                value_text: pv.values && pv.values.length > 0 ? pv.values[0].toLowerCase() : ''
-              }))
-              .sort((a: any, b: any) => a.property_id - b.property_id))
-            return pSig === comboSignature
-          })
-          
-          if (alreadyInProducts) {
-            continue
+          // Check if this combination already exists in the listing
+          const existingSignature = JSON.stringify(
+            combo.map(c => ({ property_id: c.property_id, value_ids: [c.value_id] }))
+              .sort((a, b) => a.property_id - b.property_id)
+          )
+          if (csvVariationsBySignature.has(existingSignature)) {
+            continue // Already exists
           }
           
-          // This is a missing combination - create it with is_enabled: false
-          logger.log(`Generating missing combination: ${combo.map(pv => pv.value).join(' / ')} (is_enabled: false)`)
+          // This is a missing combination - create it as hidden
+          logger.log(`Creating hidden combination: ${combo.map(c => c.value).join(' / ')} (not in CSV/Sheet)`)
           
-          // CRITICAL: Ensure the combination has ALL properties from canonical order
-          // If it doesn't, skip it (this shouldn't happen if generateCombinations works correctly)
-          if (combo.length !== canonicalPropertyOrder.length) {
-            logger.warn(`Skipping combination ${combo.map(pv => pv.value).join(' / ')} - missing properties. Expected ${canonicalPropertyOrder.length}, got ${combo.length}`)
-            continue
-          }
-          
-          // Sort by canonical order to ensure consistent property structure
+          // Build property values in canonical order
           const propertyValues = canonicalPropertyOrder
             .map(propID => {
-              const comboProp = combo.find(pv => pv.property_id === propID)
-              if (!comboProp) {
-                logger.error(`Missing property ${propID} in combination ${combo.map(pv => pv.value).join(' / ')}`)
-                return null
+              const comboProp = combo.find(c => c.property_id === propID)
+              if (!comboProp) return null
+              
+              // Find property name
+              let propertyName = ''
+              if (existingListing && existingListing.inventory.products.length > 0) {
+                const firstProduct = existingListing.inventory.products.find((p: any) => !p.is_deleted)
+                if (firstProduct && firstProduct.property_values) {
+                  const prop = firstProduct.property_values.find((pv: any) => pv.property_id === propID)
+                  if (prop) propertyName = prop.property_name || ''
+                }
               }
               
-              // Find property name from existing listing
-              const existingProp = existingListing.inventory.products[0]?.property_values.find(
-                (epv: any) => epv.property_id === propID
-              )
-              
-              // If value_id is null, we'll try to create without it (Etsy may resolve from taxonomy)
               return {
                 property_id: propID,
-                property_name: existingProp?.property_name || '',
-                value_ids: comboProp.value_id !== null ? [comboProp.value_id] : [], // Empty if value_id is null
+                property_name: propertyName,
+                value_ids: [comboProp.value_id],
                 values: [comboProp.value]
               }
             })
             .filter((pv): pv is NonNullable<typeof pv> => pv !== null)
           
-          // Double-check we have all properties
           if (propertyValues.length !== canonicalPropertyOrder.length) {
             logger.warn(`Skipping combination - failed to build property values correctly`)
             continue
           }
           
-          // Warn if creating combination without value_ids
-          if (propertyValues.some(pv => pv.value_ids.length === 0)) {
-            logger.log(`Generating combination "${combo.map(pv => pv.value).join(' / ')}" without value_ids. Etsy will validate if these property values exist in their taxonomy.`)
-          }
-          
-          // Get readiness_state_id from first existing offering
+          // Get readiness_state_id
           let readinessStateID = defaultReadinessStateID
-          if (existingListing.inventory.products.length > 0) {
+          if (existingListing && existingListing.inventory.products.length > 0) {
             const firstProduct = existingListing.inventory.products.find((p: any) => !p.is_deleted)
             if (firstProduct && firstProduct.offerings && firstProduct.offerings.length > 0) {
               const firstOffering = firstProduct.offerings.find((o: any) => !o.is_deleted)
@@ -956,13 +929,29 @@ export async function updateListingInventory(
             }
           }
           
+          // Get default price from first existing product
+          let defaultPrice = 0
+          if (existingListing && existingListing.inventory.products.length > 0) {
+            const firstProduct = existingListing.inventory.products.find((p: any) => !p.is_deleted)
+            if (firstProduct && firstProduct.offerings.length > 0) {
+              const firstOffering = firstProduct.offerings.find((o: any) => !o.is_deleted)
+              if (firstOffering && firstOffering.price) {
+                if (typeof firstOffering.price === 'object' && firstOffering.price.amount !== undefined) {
+                  defaultPrice = firstOffering.price.amount / (firstOffering.price.divisor || 1)
+                } else if (typeof firstOffering.price === 'number') {
+                  defaultPrice = firstOffering.price
+                }
+              }
+            }
+          }
+          
           const product: any = {
             sku: '',
             property_values: propertyValues,
             offerings: [{
-              price: 0,
-              quantity: 0, // Set to 0 for disabled variations
-              is_enabled: false, // Not explicitly in CSV, so disabled
+              price: defaultPrice,
+              quantity: 0, // Hidden variation
+              is_enabled: false, // Mark as hidden since not in CSV/Sheet
               readiness_state_id: readinessStateID
             }]
           }
@@ -1032,6 +1021,50 @@ export async function updateListingInventory(
         
         // Sort to match canonical order (required by Etsy API)
         const sortedExistingPropertyValues = sortPropertyValues(filteredPropertyValues)
+        
+        // CRITICAL: Skip products that have no valid property values after filtering
+        // This can happen if an existing product has invalid property data
+        if (sortedExistingPropertyValues.length === 0) {
+          logger.warn(`Skipping existing product ${existingProduct.product_id} - no valid property values after filtering`)
+          continue
+        }
+        
+        // CRITICAL: Ensure the product has ALL properties from canonical order
+        // If it's missing any, we need to add them with default values
+        if (canonicalPropertyOrder.length > 0) {
+          const existingPropertyIds = sortedExistingPropertyValues.map((pv: any) => pv.property_id)
+          const missingPropertyIds = canonicalPropertyOrder.filter(pid => !existingPropertyIds.includes(pid))
+          
+          if (missingPropertyIds.length > 0) {
+            logger.warn(`Existing product ${existingProduct.product_id} is missing properties: ${missingPropertyIds.join(', ')}. Adding default values.`)
+            
+            // Add missing properties with default values from first existing product
+            for (const missingPropID of missingPropertyIds) {
+              // Find property name and default value from first existing product
+              const firstProduct = existingListing.inventory.products.find((p: any) => !p.is_deleted)
+              if (firstProduct && firstProduct.property_values) {
+                const defaultProp = firstProduct.property_values.find((pv: any) => pv.property_id === missingPropID)
+                if (defaultProp && defaultProp.values && defaultProp.values.length > 0) {
+                  sortedExistingPropertyValues.push({
+                    property_id: missingPropID,
+                    property_name: defaultProp.property_name || '',
+                    value_ids: defaultProp.value_ids && defaultProp.value_ids.length > 0 ? [defaultProp.value_ids[0]] : [],
+                    values: [defaultProp.values[0]]
+                  })
+                }
+              }
+            }
+            
+            // Re-sort to ensure canonical order
+            const reordered = canonicalPropertyOrder
+              .map(propID => sortedExistingPropertyValues.find((pv: any) => pv.property_id === propID))
+              .filter((pv): pv is NonNullable<typeof pv> => pv !== null)
+            
+            // Replace with reordered version
+            sortedExistingPropertyValues.length = 0
+            sortedExistingPropertyValues.push(...reordered)
+          }
+        }
         
         const existingProductForAPI: any = {
           sku: existingProduct.sku || '',
@@ -1153,6 +1186,31 @@ export async function updateListingInventory(
     pricePropertyIDs.sort((a, b) => a - b)
     quantityPropertyIDs.sort((a, b) => a - b)
     skuPropertyIDs.sort((a, b) => a - b)
+
+    // CRITICAL: If quantity is NOT on property, all products must have the same quantity
+    // Etsy API requires: "quantity must be consistent across all products"
+    if (quantityPropertyIDs.length === 0 && products.length > 0) {
+      // Find the first non-zero quantity, or use 1 as default
+      let consistentQuantity = 1
+      for (const product of products) {
+        if (product.offerings && product.offerings.length > 0) {
+          const offering = product.offerings[0]
+          if (offering.quantity > 0) {
+            consistentQuantity = offering.quantity
+            break
+          }
+        }
+      }
+      
+      // Set all products to the same quantity
+      for (const product of products) {
+        if (product.offerings && product.offerings.length > 0) {
+          product.offerings[0].quantity = consistentQuantity
+        }
+      }
+      
+      logger.log(`Quantity is not on property - setting all products to consistent quantity: ${consistentQuantity}`)
+    }
 
     // Set property arrays (even if empty, as they may be required)
     inventoryBody.price_on_property = pricePropertyIDs

@@ -20,6 +20,7 @@ import {
   getStatusesToProcess,
   groupListingsByStatus,
   buildRowIndexMaps,
+  deleteSheetRows, // Add this import
 } from './sheetUtils'
 import { applySheetFormatting } from './sheetFormatting'
 import { COLUMNS, getHeaderValue } from './constants'
@@ -157,6 +158,35 @@ export function mergeRowData(etsyRow: string[], sheetRow: string[]): string[] {
   return merged
 }
 
+// Add helper function to detect if row changed
+function hasRowChanged(newRow: string[], existingRow: string[]): boolean {
+  // Quick check: compare lengths first
+  if (newRow.length !== existingRow.length) return true
+  
+  // Compare key fields that matter
+  const keyFields = [
+    COLUMNS.listing_id,
+    COLUMNS.title,
+    COLUMNS.description,
+    COLUMNS.status,
+    COLUMNS.price,
+    COLUMNS.quantity,
+    COLUMNS.product_id,
+    COLUMNS.variation_price,
+    COLUMNS.variation_quantity,
+  ]
+  
+  for (const fieldIndex of keyFields) {
+    const newVal = newRow[fieldIndex]?.trim() || ''
+    const existingVal = existingRow[fieldIndex]?.trim() || ''
+    if (newVal !== existingVal) {
+      return true
+    }
+  }
+  
+  return false
+}
+
 // Write listings to Google Sheet - creates separate sheets per status
 // requestedStatus: if provided, only process this status. If undefined, process all statuses.
 // Returns the sheet name that was written to (for opening the correct tab)
@@ -171,6 +201,24 @@ export async function writeListingsToSheet(
   
   // Group listings by status
   const listingsByStatus = groupListingsByStatus(listings)
+  
+  // Collect all listing IDs and product IDs from Etsy for comparison
+  const etsyListingIds = new Set<number>()
+  const etsyProductIds = new Set<number>()
+  for (const listing of listings.results) {
+    const listingIdNum = parseId(listing.listing_id?.toString())
+    if (listingIdNum !== null) {
+      etsyListingIds.add(listingIdNum)
+    }
+    // Collect all product IDs from this listing
+    if (listing.inventory?.products) {
+      for (const product of listing.inventory.products) {
+        if (!product.is_deleted && product.product_id) {
+          etsyProductIds.add(product.product_id)
+        }
+      }
+    }
+  }
   
   // Process only the requested statuses
   let writtenSheetName: string | null = null
@@ -218,6 +266,7 @@ export async function writeListingsToSheet(
       // Separate rows into updates and appends
       const rowsToUpdate: Array<{ rowIndex: number; data: string[]; existingRow: string[] }> = []
       const rowsToAppend: string[][] = []
+      const processedRowIndices = new Set<number>() // Track which rows we've processed
       
       for (const newRow of newDataRows) {
         const listingId = newRow[COLUMNS.listing_id]?.trim()
@@ -249,21 +298,57 @@ export async function writeListingsToSheet(
         if (rowIndex && existingRow) {
           // Merge: only update fields that match Etsy, keep sheet values for mismatched fields
           const mergedRow = mergeRowData(newRow, existingRow)
-          rowsToUpdate.push({ rowIndex, data: mergedRow, existingRow })
+          
+          // Only update if something actually changed
+          if (hasRowChanged(mergedRow, existingRow)) {
+            rowsToUpdate.push({ rowIndex, data: mergedRow, existingRow })
+            processedRowIndices.add(rowIndex)
+          } else {
+            // Row unchanged, just mark as processed
+            processedRowIndices.add(rowIndex)
+          }
         } else {
           // Append new row
           rowsToAppend.push(newRow)
         }
       }
       
+      // Identify rows to delete: rows in sheet that don't exist in Etsy
+      const rowsToDelete: number[] = []
+      if (existingHeaderRowIndex >= 0) {
+        for (let i = existingHeaderRowIndex + 1; i < existingRows.length; i++) {
+          const row = existingRows[i] || []
+          const rowListingId = parseId(row[COLUMNS.listing_id]?.trim())
+          const rowProductId = parseId(row[COLUMNS.product_id]?.trim())
+          const rowIndex = i + 1 // Convert to 1-based
+          
+          // Skip if we've already processed this row (it's being updated)
+          if (processedRowIndices.has(rowIndex)) {
+            continue
+          }
+          
+          // Delete if:
+          // 1. Row has a listing ID that's not in Etsy (main listing row or variation with listing ID)
+          // 2. Row has a product ID that's not in Etsy (variation rows)
+          // Note: We check both conditions because a row could have both listing ID and product ID
+          const shouldDelete = 
+            (rowListingId !== null && !etsyListingIds.has(rowListingId)) ||
+            (rowProductId !== null && !etsyProductIds.has(rowProductId))
+          
+          if (shouldDelete) {
+            rowsToDelete.push(rowIndex)
+          }
+        }
+      }
+      
+      // Group updates by row index to batch them efficiently (reuse this map later)
+      const updatesByRow = new Map<number, string[]>()
+      for (const update of rowsToUpdate) {
+        updatesByRow.set(update.rowIndex, update.data)
+      }
+      
       // Update existing rows in batches
       if (rowsToUpdate.length > 0) {
-        // Group updates by row index to batch them efficiently
-        const updatesByRow = new Map<number, string[]>()
-        for (const update of rowsToUpdate) {
-          updatesByRow.set(update.rowIndex, update.data)
-        }
-        
         // Update each row (Google Sheets API requires individual updates for different rows)
         let updateCount = 0
         for (const [rowIndex, data] of updatesByRow) {
@@ -279,15 +364,27 @@ export async function writeListingsToSheet(
         }
       }
       
+      // Delete orphaned rows (rows that exist in sheet but not in Etsy)
+      // Do this before appending so row indices are correct
+      if (rowsToDelete.length > 0) {
+        await deleteSheetRows(sheetId, sheetName, rowsToDelete)
+      }
+      
       // Append new rows
+      // Calculate the correct starting row after deletions
+      // existingRows.length is the total rows (0-based array), which equals the last row index (1-based in sheet)
+      // After deletions, the last row index = original last row - number of deletions
       if (rowsToAppend.length > 0) {
-        // Find the last row with data (existing rows + header)
-        const lastRowIndex = existingRows.length > 0 ? existingRows.length : 1
+        // In 1-based sheet indexing: row 1 is header, row 2+ are data rows
+        // existingRows.length (0-based array length) = last row index (1-based in sheet)
+        // After deletions, last row index = existingRows.length - rowsToDelete.length
+        const lastRowIndex = existingRows.length - rowsToDelete.length
         
         const batchSize = 1000
         for (let i = 0; i < rowsToAppend.length; i += batchSize) {
           const batch = rowsToAppend.slice(i, i + batchSize)
-          const startRow = lastRowIndex + i + 1 // +1 because we're appending after last row
+          // Append after the last existing row (after deletions)
+          const startRow = lastRowIndex + 1 + i
           await batchUpdateSheet(sheetId, sheetName, batch, startRow)
           
           // Rate limit: 60 requests/minute = 1 request/second
@@ -296,12 +393,36 @@ export async function writeListingsToSheet(
           }
         }
       }
-      
-      // Re-read data for formatting (get all rows including updates and appends)
-      const updatedData = await readSheetData(sheetId, sheetName)
-      const allDataRows = (updatedData.values || []).slice(existingHeaderRowIndex >= 0 ? existingHeaderRowIndex + 1 : 1)
-      
-      // Apply formatting to make it look better
+
+      // Prepare allDataRows for formatting (include all rows including updates and appends)
+      // Maintain original row order: existing rows (updated or unchanged), then appended rows
+      const allDataRows: string[][] = []
+
+      // Build a set of deleted row indices for quick lookup
+      const deletedRowIndices = new Set(rowsToDelete)
+
+      // Iterate through existing rows in order, replacing with updates where needed
+      for (let i = existingHeaderRowIndex + 1; i < existingRows.length; i++) {
+        const rowIndex = i + 1 // Convert to 1-based
+        
+        // Skip deleted rows
+        if (deletedRowIndices.has(rowIndex)) {
+          continue
+        }
+        
+        // Use updated row if available, otherwise use existing row
+        if (updatesByRow.has(rowIndex)) {
+          allDataRows.push(updatesByRow.get(rowIndex)!)
+        } else {
+          // Row wasn't updated or deleted, keep original
+          allDataRows.push(existingRows[i] || [])
+        }
+      }
+
+      // Add appended rows at the end
+      allDataRows.push(...rowsToAppend)
+
+      // Now use allDataRows for formatting instead of re-reading
       await applySheetFormatting(sheetId, sheetName, headerRow.length, allDataRows)
       
       // Track the first sheet written (or the requested status sheet)

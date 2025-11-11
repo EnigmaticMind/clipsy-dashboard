@@ -30,6 +30,7 @@ export {
   ensureSheetExists,
   readSheetData,
   batchUpdateSheet,
+  deleteSheetRows, // Add this
   getSheetNameForStatus,
   getStatusesToProcess,
   groupListingsByStatus,

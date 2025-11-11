@@ -4,6 +4,8 @@ import { ProcessedListing } from '../uploadService'
 import { makeEtsyRequest } from '../etsyApi'
 import { logger } from '../../utils/logger'
 
+import { encodeHTMLEntities } from '../../utils/dataParsing'
+
 // Create a new listing
 export async function createListing(
   shopID: number,
@@ -76,10 +78,11 @@ export async function createListing(
   }
 
   // Build request body
+  // Encode HTML entities for title and description (Etsy API expects HTML entities)
   const requestBody: any = {
     quantity: 1, // Default, will be updated by inventory
-    title: listing.title,
-    description: listing.description,
+    title: encodeHTMLEntities(listing.title),
+    description: encodeHTMLEntities(listing.description),
     price: 1, // Default, will be updated by inventory
     who_made: 'i_did',
     when_made: '2020_2024',

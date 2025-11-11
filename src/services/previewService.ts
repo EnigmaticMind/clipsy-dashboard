@@ -5,6 +5,7 @@ import { parseUploadCSV, ProcessedListing, ProcessedVariation } from './uploadSe
 import { getListing, Listing } from './etsyApi'
 import { getValidAccessToken } from './oauth'
 import { logger } from '../utils/logger'
+import { decodeHTMLEntities } from '../utils/dataParsing'
 
 export interface FieldChange {
   field: string
@@ -39,56 +40,9 @@ export interface PreviewResponse {
   }
 }
 
-// Decode HTML entities (works in service workers without DOM)
-function decodeHTMLEntities(s: string): string {
-  if (!s) return s;
-  
-  // Common HTML entities mapping
-  const entityMap: Record<string, string> = {
-    '&amp;': '&',
-    '&lt;': '<',
-    '&gt;': '>',
-    '&quot;': '"',
-    '&#39;': "'",
-    '&apos;': "'",
-    '&nbsp;': ' ',
-    '&copy;': '©',
-    '&reg;': '®',
-    '&trade;': '™',
-  };
-  
-  let decoded = s;
-  
-  // Replace named entities
-  for (const [entity, char] of Object.entries(entityMap)) {
-    decoded = decoded.replace(new RegExp(entity, 'g'), char);
-  }
-  
-  // Handle numeric entities like &#39; or &#x27;
-  decoded = decoded.replace(/&#(\d+);/g, (_match, numStr) => {
-    const num = parseInt(numStr, 10);
-    return String.fromCharCode(num);
-  });
-  
-  // Handle hex entities like &#x27;
-  decoded = decoded.replace(/&#x([0-9a-fA-F]+);/g, (_match, hexStr) => {
-    const num = parseInt(hexStr, 16);
-    return String.fromCharCode(num);
-  });
-  
-  // If document is available (not in service worker), use it as fallback for complex entities
-  if (typeof document !== 'undefined') {
-    try {
-      const textarea = document.createElement('textarea');
-      textarea.innerHTML = decoded;
-      decoded = textarea.value;
-    } catch {
-      // If document.createElement fails, use the decoded string as-is
-    }
-  }
-  
-  return decoded;
-}
+// ============================================================================
+// Helper Functions
+// ============================================================================
 
 // Normalize description for comparison
 function normalizeDescription(desc: string): string {
@@ -123,91 +77,163 @@ function tagsEqual(tags1: string[], tags2: string[]): boolean {
   return true
 }
 
+// Helper functions for creating FieldChange objects
+function createFieldChange(
+  field: string,
+  before: string | number | null,
+  after: string | number | null,
+  changeType: 'modified' | 'added' | 'removed'
+): FieldChange {
+  return { field, before, after, changeType }
+}
+
+function createAddedField(field: string, after: string | number): FieldChange {
+  return createFieldChange(field, null, after, 'added')
+}
+
+function createModifiedField(field: string, before: string | number, after: string | number): FieldChange {
+  return createFieldChange(field, before, after, 'modified')
+}
+
+// ============================================================================
+// Comparison Functions
+// ============================================================================
+
 // Compare variation
 function compareVariation(
   existing: Listing['inventory']['products'][0],
   newVariation: ProcessedVariation,
   inventory: Listing['inventory']
 ): FieldChange[] {
-  const changes: FieldChange[] = []
+  logger.info(`Comparing variation: `, newVariation)
+  logger.info(`Inventory: `, inventory)
+  logger.info(`Existing: `, existing)
+  return []
+  // const changes: FieldChange[] = []
 
-  // Compare property options
-  if (existing.property_values.length > 0) {
-    const existingOption1 = normalizeDescription(
-      existing.property_values[0].values.join(', ')
-    )
-    const newOption1 = normalizeDescription(newVariation.propertyOption1)
-    if (newOption1 !== '' && existingOption1 !== newOption1) {
-      changes.push({
-        field: 'property_option_1',
-        before: existingOption1,
-        after: newOption1,
-        changeType: 'modified',
-      })
-    }
-    if (existing.property_values.length > 1) {
-      const existingOption2 = normalizeDescription(
-        existing.property_values[1].values.join(', ')
-      )
-      const newOption2 = normalizeDescription(newVariation.propertyOption2)
-      if (newOption2 !== '' && existingOption2 !== newOption2) {
-        changes.push({
-          field: 'property_option_2',
-          before: existingOption2,
-          after: newOption2,
-          changeType: 'modified',
-        })
-      }
-    }
-  }
+  // // Handle case where existing product has no property values but new variation does
+  // // This means we're adding property values to an existing product
+  // if (existing.property_values.length === 0) {
+  //   // Existing product has no property values, but new variation has them
+  //   // This is a significant change - adding variation data to a product
+  //   if (newVariation.propertyOption1 !== '') {
+  //     changes.push(createAddedField('property_option_1', normalizeDescription(newVariation.propertyOption1)))
+  //   }
+  //   if (newVariation.propertyOption2 !== '') {
+  //     changes.push(createAddedField('property_option_2', normalizeDescription(newVariation.propertyOption2)))
+  //   }
+    
+  //   // Check price/quantity/SKU - always show as changes since we're adding property structure
+  //   const hasPriceOnProperty = inventory.price_on_property.length > 0
+  //   const hasQuantityOnProperty = inventory.quantity_on_property.length > 0
+  //   const hasSKUOnProperty = inventory.sku_on_property.length > 0
+    
+  //   // Price handling
+  //   if (hasPriceOnProperty && newVariation.propertyPrice !== null) {
+  //     // Price is on property - compare with existing offering price
+  //     if (existing.offerings.length > 0) {
+  //       const existingPrice = existing.offerings[0].price.amount / existing.offerings[0].price.divisor
+  //       const epsilon = 0.01
+  //       if (Math.abs(existingPrice - newVariation.propertyPrice) > epsilon) {
+  //         changes.push(createModifiedField('price', existingPrice.toFixed(2), newVariation.propertyPrice.toFixed(2)))
+  //       } else {
+  //         // Price matches, but we're adding property structure, so show as added
+  //         changes.push(createAddedField('price', newVariation.propertyPrice.toFixed(2)))
+  //       }
+  //     } else {
+  //       changes.push(createAddedField('price', newVariation.propertyPrice.toFixed(2)))
+  //     }
+  //   }
+    
+  //   // Quantity handling
+  //   if (hasQuantityOnProperty && newVariation.propertyQuantity !== null) {
+  //     // Quantity is on property - compare with existing offering quantity
+  //     if (existing.offerings.length > 0) {
+  //       if (existing.offerings[0].quantity !== newVariation.propertyQuantity) {
+  //         changes.push(createModifiedField('quantity', existing.offerings[0].quantity, newVariation.propertyQuantity))
+  //       } else {
+  //         // Quantity matches, but we're adding property structure, so show as added
+  //         changes.push(createAddedField('quantity', newVariation.propertyQuantity))
+  //       }
+  //     } else {
+  //       changes.push(createAddedField('quantity', newVariation.propertyQuantity))
+  //     }
+  //   }
+    
+  //   // SKU handling
+  //   if (hasSKUOnProperty && newVariation.propertySKU !== '') {
+  //     // SKU is on property - compare with existing product SKU
+  //     if (existing.sku !== newVariation.propertySKU) {
+  //       changes.push(createModifiedField('sku', existing.sku || '', newVariation.propertySKU))
+  //     } else {
+  //       // SKU matches, but we're adding property structure, so show as added
+  //       changes.push(createAddedField('sku', newVariation.propertySKU))
+  //     }
+  //   }
+    
+  //   return changes // Return early since we've handled the empty property_values case
+  // }
 
-  // Compare price (if on property)
-  if (inventory.price_on_property.length > 0 && newVariation.propertyPrice !== null) {
-    if (existing.offerings.length > 0) {
-      const existingPrice =
-        existing.offerings[0].price.amount / existing.offerings[0].price.divisor
-      const epsilon = 0.01
-      if (Math.abs(existingPrice - newVariation.propertyPrice) > epsilon) {
-        changes.push({
-          field: 'price',
-          before: existingPrice.toFixed(2),
-          after: newVariation.propertyPrice.toFixed(2),
-          changeType: 'modified',
-        })
-      }
-    }
-  }
+  // // Compare property options (existing has property values)
+  // if (existing.property_values.length > 0) {
+  //   const existingOption1 = normalizeDescription(
+  //     existing.property_values[0].values.join(', ')
+  //   )
+  //   const newOption1 = normalizeDescription(newVariation.propertyOption1)
+  //   if (newOption1 !== '' && existingOption1 !== newOption1) {
+  //     changes.push(createModifiedField('property_option_1', existingOption1, newOption1))
+  //   }
+  //   if (existing.property_values.length > 1) {
+  //     const existingOption2 = normalizeDescription(
+  //       existing.property_values[1].values.join(', ')
+  //     )
+  //     const newOption2 = normalizeDescription(newVariation.propertyOption2)
+  //     if (newOption2 !== '' && existingOption2 !== newOption2) {
+  //       changes.push(createModifiedField('property_option_2', existingOption2, newOption2))
+  //     }
+  //   }
+  // }
 
-  // Compare quantity (if on property)
-  if (
-    inventory.quantity_on_property.length > 0 &&
-    newVariation.propertyQuantity !== null
-  ) {
-    if (existing.offerings.length > 0) {
-      if (existing.offerings[0].quantity !== newVariation.propertyQuantity) {
-        changes.push({
-          field: 'quantity',
-          before: existing.offerings[0].quantity,
-          after: newVariation.propertyQuantity,
-          changeType: 'modified',
-        })
-      }
-    }
-  }
+  // // Compare price (if on property)
+  // if (inventory.price_on_property.length > 0 && newVariation.propertyPrice !== null) {
+  //   if (existing.offerings.length > 0) {
+  //     const existingPrice =
+  //       existing.offerings[0].price.amount / existing.offerings[0].price.divisor
+  //     const epsilon = 0.01
+  //     if (Math.abs(existingPrice - newVariation.propertyPrice) > epsilon) {
+  //       changes.push(createModifiedField(
+  //         'price',
+  //         existingPrice.toFixed(2),
+  //         newVariation.propertyPrice.toFixed(2)
+  //       ))
+  //     }
+  //   }
+  // }
 
-  // Compare SKU (if on property)
-  if (inventory.sku_on_property.length > 0 && newVariation.propertySKU !== '') {
-    if (existing.sku !== newVariation.propertySKU) {
-      changes.push({
-        field: 'sku',
-        before: existing.sku,
-        after: newVariation.propertySKU,
-        changeType: 'modified',
-      })
-    }
-  }
+  // // Compare quantity (if on property)
+  // if (
+  //   inventory.quantity_on_property.length > 0 &&
+  //   newVariation.propertyQuantity !== null
+  // ) {
+  //   if (existing.offerings.length > 0) {
+  //     if (existing.offerings[0].quantity !== newVariation.propertyQuantity) {
+  //       changes.push(createModifiedField(
+  //         'quantity',
+  //         existing.offerings[0].quantity,
+  //         newVariation.propertyQuantity
+  //       ))
+  //     }
+  //   }
+  // }
 
-  return changes
+  // // Compare SKU (if on property)
+  // if (inventory.sku_on_property.length > 0 && newVariation.propertySKU !== '') {
+  //   if (existing.sku !== newVariation.propertySKU) {
+  //     changes.push(createModifiedField('sku', existing.sku, newVariation.propertySKU))
+  //   }
+  // }
+
+  // return changes
 }
 
 // Compare non-variation product
@@ -221,12 +247,7 @@ function compareNonVariationProduct(
   // Compare SKU
   if (inventory.sku_on_property.length === 0 && newListing.sku !== '') {
     if (existing.sku !== newListing.sku) {
-      changes.push({
-        field: 'sku',
-        before: existing.sku,
-        after: newListing.sku,
-        changeType: 'modified',
-      })
+      changes.push(createModifiedField('sku', existing.sku, newListing.sku))
     }
   }
 
@@ -237,12 +258,11 @@ function compareNonVariationProduct(
         existing.offerings[0].price.amount / existing.offerings[0].price.divisor
       const epsilon = 0.01
       if (Math.abs(existingPrice - newListing.price) > epsilon) {
-        changes.push({
-          field: 'price',
-          before: existingPrice.toFixed(2),
-          after: newListing.price.toFixed(2),
-          changeType: 'modified',
-        })
+        changes.push(createModifiedField(
+          'price',
+          existingPrice.toFixed(2),
+          newListing.price.toFixed(2)
+        ))
       }
     }
   }
@@ -251,12 +271,11 @@ function compareNonVariationProduct(
   if (inventory.quantity_on_property.length === 0 && newListing.quantity !== null) {
     if (existing.offerings.length > 0) {
       if (existing.offerings[0].quantity !== newListing.quantity) {
-        changes.push({
-          field: 'quantity',
-          before: existing.offerings[0].quantity,
-          after: newListing.quantity,
-          changeType: 'modified',
-        })
+        changes.push(createModifiedField(
+          'quantity',
+          existing.offerings[0].quantity,
+          newListing.quantity
+        ))
       }
     }
   }
@@ -264,496 +283,407 @@ function compareNonVariationProduct(
   return changes
 }
 
-// Generate preview of changes
-export async function previewUploadCSV(file: File): Promise<PreviewResponse> {
-  // Get access token
-  await getValidAccessToken()
+// ============================================================================
+// Listing Fetching
+// ============================================================================
 
-  // Parse CSV
-  const newListings = await parseUploadCSV(file)
-
-  // Extract listing IDs from CSV (only fetch listings we're actually updating)
-  const listingIDsToFetch = newListings
-    .filter(l => l.listingID > 0 && !l.toDelete)
-    .map(l => l.listingID)
-
-  // Fetch only the existing listings we need for comparison
+async function fetchExistingListings(listingIDs: number[]): Promise<Map<number, Listing>> {
   const existingListingsMap = new Map<number, Listing>()
   
-  if (listingIDsToFetch.length > 0) {
-    // Fetch only the existing listings we need for comparison
-    const batchSize = 10 // Fetch 10 listings in parallel
-    
-    for (let i = 0; i < listingIDsToFetch.length; i += batchSize) {
-      const batch = listingIDsToFetch.slice(i, i + batchSize)
-      const batchPromises = batch.map(id => 
-        getListing(id).catch(error => {
-          logger.error(`Error fetching listing ${id}:`, error)
-          return null // Return null on error, we'll handle it later
-        })
-      )
-      
-      const batchResults = await Promise.all(batchPromises)
-      
-      batchResults.forEach((listing, idx) => {
-        if (listing) {
-          existingListingsMap.set(batch[idx], listing)
-        }
+  if (listingIDs.length === 0) return existingListingsMap
+  
+  const batchSize = 10
+  for (let i = 0; i < listingIDs.length; i += batchSize) {
+    const batch = listingIDs.slice(i, i + batchSize)
+    const batchPromises = batch.map(id => 
+      getListing(id).catch(error => {
+        logger.error(`Error fetching listing ${id}:`, error)
+        return null
       })
+    )
+    
+    const batchResults = await Promise.all(batchPromises)
+    batchResults.forEach((listing, idx) => {
+      if (listing) {
+        existingListingsMap.set(batch[idx], listing)
+      }
+    })
+  }
+  
+  return existingListingsMap
+}
+
+// ============================================================================
+// Change Type Handlers
+// ============================================================================
+
+function handleDeleteChange(
+  newListing: ProcessedListing,
+  existing: Listing | undefined,
+  changeID: string
+): PreviewChange | null {
+  if (!newListing.toDelete || newListing.listingID === 0 || !existing) {
+    return null
+  }
+  
+  return {
+    changeId: changeID,
+    changeType: 'delete',
+    listingId: newListing.listingID,
+    title: existing.title,
+    fieldChanges: [],
+    variationChanges: [],
+  }
+}
+
+function buildCreateFieldChanges(newListing: ProcessedListing): FieldChange[] {
+  const fieldChanges: FieldChange[] = [
+    createAddedField('title', normalizeDescription(newListing.title)),
+    createAddedField('description', normalizeDescription(newListing.description)),
+  ]
+
+  if (newListing.price !== null) {
+    fieldChanges.push(createAddedField('price', newListing.price.toFixed(2)))
+  }
+  if (newListing.quantity !== null) {
+    fieldChanges.push(createAddedField('quantity', newListing.quantity))
+  }
+  if (newListing.sku !== '') {
+    fieldChanges.push(createAddedField('sku', newListing.sku))
+  }
+  if (newListing.tags.length > 0) {
+    const tagsNormalized = newListing.tags.map(normalizeDescription)
+    fieldChanges.push(createAddedField('tags', tagsNormalized.join(', ')))
+  }
+  if (newListing.status !== '') {
+    fieldChanges.push(createAddedField('status', newListing.status))
+  }
+
+  return fieldChanges
+}
+
+function buildCreateVariationChanges(newListing: ProcessedListing, changeID: string): VariationChange[] {
+  const variationChanges: VariationChange[] = []
+  
+  for (let i = 0; i < newListing.variations.length; i++) {
+    const variation = newListing.variations[i]
+    if (variation.toDelete) {
+      continue
+    }
+    
+    const varChanges: FieldChange[] = []
+    if (variation.propertyOption1 !== '') {
+      varChanges.push(createAddedField('property_option_1', normalizeDescription(variation.propertyOption1)))
+    }
+    if (variation.propertyOption2 !== '') {
+      varChanges.push(createAddedField('property_option_2', normalizeDescription(variation.propertyOption2)))
+    }
+    if (variation.propertyPrice !== null) {
+      varChanges.push(createAddedField('price', variation.propertyPrice.toFixed(2)))
+    }
+    if (variation.propertyQuantity !== null) {
+      varChanges.push(createAddedField('quantity', variation.propertyQuantity))
+    }
+    if (variation.propertySKU !== '') {
+      varChanges.push(createAddedField('sku', variation.propertySKU))
+    }
+
+    variationChanges.push({
+      changeId: `${changeID}_var_${i}`,
+      variationId: `new_${i}`,
+      changeType: 'create',
+      fieldChanges: varChanges,
+    })
+  }
+  
+  return variationChanges
+}
+
+function handleCreateChange(
+  newListing: ProcessedListing,
+  changeID: string
+): PreviewChange {
+  const fieldChanges = buildCreateFieldChanges(newListing)
+  const variationChanges = buildCreateVariationChanges(newListing, changeID)
+  
+  return {
+    changeId: changeID,
+    changeType: 'create',
+    listingId: 0,
+    title: newListing.title,
+    fieldChanges,
+    variationChanges,
+  }
+}
+
+function compareListingFields(
+  newListing: ProcessedListing,
+  existing: Listing
+): FieldChange[] {
+  const changes: FieldChange[] = []
+
+  // Title
+  const existingTitle = normalizeDescription(existing.title)
+  const newTitle = normalizeDescription(newListing.title)
+  if (existingTitle !== newTitle) {
+    changes.push(createModifiedField('title', existingTitle, newTitle))
+  }
+
+  // Description
+  const existingDesc = normalizeDescription(existing.description)
+  const newDesc = normalizeDescription(newListing.description)
+  if (existingDesc !== newDesc) {
+    changes.push(createModifiedField('description', existingDesc, newDesc))
+  }
+
+  // Status
+  if (newListing.status !== '' && existing.state !== newListing.status) {
+    changes.push(createModifiedField('status', existing.state, newListing.status))
+  }
+
+  // Tags
+  const existingTagsNormalized = existing.tags.map(normalizeDescription)
+  const newTagsNormalized = newListing.tags.map(normalizeDescription)
+  if (!tagsEqual(newTagsNormalized, existingTagsNormalized)) {
+    changes.push(createModifiedField(
+      'tags',
+      existingTagsNormalized.join(', '),
+      newTagsNormalized.join(', ')
+    ))
+  }
+
+  // Price (only if not on property)
+  if (newListing.price !== null && existing.inventory.price_on_property.length === 0) {
+    const existingPrice = existing.price.amount / existing.price.divisor
+    const epsilon = 0.01
+    if (Math.abs(existingPrice - newListing.price) > epsilon) {
+      changes.push(createModifiedField('price', existingPrice.toFixed(2), newListing.price.toFixed(2)))
     }
   }
 
-  const changes: PreviewChange[] = []
-  let changeCounter = 0
+  // Quantity (only if not on property)
+  if (
+    newListing.quantity !== null &&
+    existing.inventory.quantity_on_property.length === 0
+  ) {
+    if (existing.quantity !== newListing.quantity) {
+      changes.push(createModifiedField('quantity', existing.quantity, newListing.quantity))
+    }
+  }
 
-  // Process each listing from CSV
-  for (const newListing of newListings) {
-    changeCounter++
-    const changeID = `change_${changeCounter}`
+  // SKU (only if not on property)
+  if (newListing.sku !== '' && existing.inventory.sku_on_property.length === 0) {
+    let existingSKU = ''
+    if (
+      existing.inventory.products.length > 0 &&
+      !existing.inventory.products[0].is_deleted
+    ) {
+      existingSKU = existing.inventory.products[0].sku
+    }
+    if (newListing.sku !== existingSKU) {
+      changes.push(createModifiedField('sku', existingSKU, newListing.sku))
+    }
+  }
 
-    // Handle delete
-    if (newListing.toDelete) {
-      if (newListing.listingID === 0) {
-        continue // Skip deletes without listing ID
+  return changes
+}
+
+function compareVariations(
+  newListing: ProcessedListing,
+  existing: Listing,
+  changeID: string
+): VariationChange[] {
+  const variationChanges: VariationChange[] = []
+  logger.info(`Comparing variations for listing ${newListing.listingID}`)
+  logger.info(`New listing has variations: ${newListing.hasVariations}`)
+  
+  if (!newListing.hasVariations) {
+    // Non-variation listing - compare single product
+    if (
+      existing.inventory.products.length > 0 &&
+      !existing.inventory.products[0].is_deleted
+    ) {
+      const existingProduct = existing.inventory.products[0]
+      const varChanges = compareNonVariationProduct(
+        existingProduct,
+        newListing,
+        existing.inventory
+      )
+      if (varChanges.length > 0) {
+        variationChanges.push({
+          changeId: `${changeID}_product`,
+          variationId: existingProduct.product_id.toString(),
+          changeType: 'update',
+          fieldChanges: varChanges,
+        })
       }
+    }
+    return variationChanges
+  }
 
-      const existing = existingListingsMap.get(newListing.listingID)
-      if (!existing) {
-        continue // Listing doesn't exist, skip
+  // Check if we're converting from non-variation to variation
+  const isConvertingToVariations = !existing.has_variations && newListing.hasVariations
+
+  // Create map of existing variations by product ID
+  const existingVariationsMap = new Map<
+    number,
+    Listing['inventory']['products'][0]
+  >()
+  for (const product of existing.inventory.products) {
+    if (!product.is_deleted) {
+      existingVariationsMap.set(product.product_id, product)
+    }
+  }
+
+  logger.info(`New listing variations map: `, newListing.variations)
+  logger.info(`Is converting to variations: ${isConvertingToVariations}`)
+  logger.info(`Existing products count: ${existingVariationsMap.size}`)
+
+  // Process new variations
+  for (let i = 0; i < newListing.variations.length; i++) {
+    const newVariation = newListing.variations[i]
+    const varChangeID = `${changeID}_var_${i}`
+
+    if (newVariation.toDelete) {
+      // Variation deletion
+      if (newVariation.productID > 0 && existingVariationsMap.has(newVariation.productID)) {
+        variationChanges.push({
+          changeId: varChangeID,
+          variationId: newVariation.productID.toString(),
+          changeType: 'delete',
+          fieldChanges: [],
+        })
       }
-
-      changes.push({
-        changeId: changeID,
-        changeType: 'delete',
-        listingId: newListing.listingID,
-        title: existing.title,
-        fieldChanges: [],
-        variationChanges: [],
-      })
       continue
     }
 
-    // Handle create (no listing ID)
-    if (newListing.listingID === 0) {
-      const fieldChanges: FieldChange[] = [
-        {
-          field: 'title',
-          before: null,
-          after: normalizeDescription(newListing.title),
-          changeType: 'added',
-        },
-        {
-          field: 'description',
-          before: null,
-          after: normalizeDescription(newListing.description),
-          changeType: 'added',
-        },
-      ]
-
-      if (newListing.price !== null) {
-        fieldChanges.push({
-          field: 'price',
-          before: null,
-          after: newListing.price.toFixed(2),
-          changeType: 'added',
-        })
-      }
-      if (newListing.quantity !== null) {
-        fieldChanges.push({
-          field: 'quantity',
-          before: null,
-          after: newListing.quantity,
-          changeType: 'added',
-        })
-      }
-      if (newListing.sku !== '') {
-        fieldChanges.push({
-          field: 'sku',
-          before: null,
-          after: newListing.sku,
-          changeType: 'added',
-        })
-      }
-      if (newListing.tags.length > 0) {
-        const tagsNormalized = newListing.tags.map((tag) =>
-          normalizeDescription(tag)
-        )
-        fieldChanges.push({
-          field: 'tags',
-          before: null,
-          after: tagsNormalized.join(', '),
-          changeType: 'added',
-        })
-      }
-      if (newListing.status !== '') {
-        fieldChanges.push({
-          field: 'status',
-          before: null,
-          after: newListing.status,
-          changeType: 'added',
-        })
-      }
-
-      // Process variations for new listing
-      const variationChanges: VariationChange[] = []
-      for (let i = 0; i < newListing.variations.length; i++) {
-        const variation = newListing.variations[i]
-        if (variation.toDelete) {
-          continue // Skip deleted variations in new listings
+    // Check if variation exists
+    if (newVariation.productID > 0) {
+      const existingVar = existingVariationsMap.get(newVariation.productID)
+      logger.info(`Existing variation: `, existingVar)
+      logger.info(`New variation: `, newVariation)
+      if (existingVar) {
+        // Update existing variation
+        const varChanges = compareVariation(existingVar, newVariation, existing.inventory)
+        logger.info(`Var changes: `, varChanges)
+        if (varChanges.length > 0) {
+          variationChanges.push({
+            changeId: varChangeID,
+            variationId: newVariation.productID.toString(),
+            changeType: 'update',
+            fieldChanges: varChanges,
+          })
         }
+      } else {
+        // New variation (product ID doesn't exist in map)
         const varChanges: FieldChange[] = []
-        if (variation.propertyOption1 !== '') {
-          varChanges.push({
-            field: 'property_option_1',
-            before: null,
-            after: normalizeDescription(variation.propertyOption1),
-            changeType: 'added',
-          })
+        if (newVariation.propertyOption1 !== '') {
+          varChanges.push(createAddedField('property_option_1', normalizeDescription(newVariation.propertyOption1)))
         }
-        if (variation.propertyOption2 !== '') {
-          varChanges.push({
-            field: 'property_option_2',
-            before: null,
-            after: normalizeDescription(variation.propertyOption2),
-            changeType: 'added',
-          })
+        if (newVariation.propertyOption2 !== '') {
+          varChanges.push(createAddedField('property_option_2', normalizeDescription(newVariation.propertyOption2)))
         }
-        if (variation.propertyPrice !== null) {
-          varChanges.push({
-            field: 'price',
-            before: null,
-            after: variation.propertyPrice.toFixed(2),
-            changeType: 'added',
-          })
+        if (newVariation.propertyPrice !== null) {
+          varChanges.push(createAddedField('price', newVariation.propertyPrice.toFixed(2)))
         }
-        if (variation.propertyQuantity !== null) {
-          varChanges.push({
-            field: 'quantity',
-            before: null,
-            after: variation.propertyQuantity,
-            changeType: 'added',
-          })
+        if (newVariation.propertyQuantity !== null) {
+          varChanges.push(createAddedField('quantity', newVariation.propertyQuantity))
         }
-        if (variation.propertySKU !== '') {
-          varChanges.push({
-            field: 'sku',
-            before: null,
-            after: variation.propertySKU,
-            changeType: 'added',
-          })
+        if (newVariation.propertySKU !== '') {
+          varChanges.push(createAddedField('sku', newVariation.propertySKU))
         }
 
         variationChanges.push({
-          changeId: `${changeID}_var_${i}`,
+          changeId: varChangeID,
           variationId: `new_${i}`,
           changeType: 'create',
           fieldChanges: varChanges,
         })
       }
-
-      changes.push({
-        changeId: changeID,
-        changeType: 'create',
-        listingId: 0,
-        title: newListing.title,
-        fieldChanges,
-        variationChanges,
-      })
-      continue
-    }
-
-    // Handle update (has listing ID)
-    const existing = existingListingsMap.get(newListing.listingID)
-    if (!existing) {
-      // Listing doesn't exist, skip
-      continue
-    }
-
-    // Compare listing-level fields
-    const fieldChanges: FieldChange[] = []
-
-    // Title
-    const existingTitle = normalizeDescription(existing.title)
-    const newTitle = normalizeDescription(newListing.title)
-    if (existingTitle !== newTitle) {
-      fieldChanges.push({
-        field: 'title',
-        before: existingTitle,
-        after: newTitle,
-        changeType: 'modified',
-      })
-    }
-
-    // Description
-    const existingDesc = normalizeDescription(existing.description)
-    const newDesc = normalizeDescription(newListing.description)
-    if (existingDesc !== newDesc) {
-      fieldChanges.push({
-        field: 'description',
-        before: existingDesc,
-        after: newDesc,
-        changeType: 'modified',
-      })
-    }
-
-    // Status
-    if (newListing.status !== '' && existing.state !== newListing.status) {
-      fieldChanges.push({
-        field: 'status',
-        before: existing.state,
-        after: newListing.status,
-        changeType: 'modified',
-      })
-    }
-
-    // Tags
-    const existingTagsNormalized = existing.tags.map((tag) =>
-      normalizeDescription(tag)
-    )
-    const newTagsNormalized = newListing.tags.map((tag) =>
-      normalizeDescription(tag)
-    )
-    if (!tagsEqual(newTagsNormalized, existingTagsNormalized)) {
-      fieldChanges.push({
-        field: 'tags',
-        before: existingTagsNormalized.join(', '),
-        after: newTagsNormalized.join(', '),
-        changeType: 'modified',
-      })
-    }
-
-    // Price (only if not on property)
-    if (newListing.price !== null && existing.inventory.price_on_property.length === 0) {
-      const existingPrice = existing.price.amount / existing.price.divisor
-      const epsilon = 0.01
-      if (Math.abs(existingPrice - newListing.price) > epsilon) {
-        fieldChanges.push({
-          field: 'price',
-          before: existingPrice.toFixed(2),
-          after: newListing.price.toFixed(2),
-          changeType: 'modified',
-        })
-      }
-    }
-
-    // Quantity (only if not on property)
-    if (
-      newListing.quantity !== null &&
-      existing.inventory.quantity_on_property.length === 0
-    ) {
-      if (existing.quantity !== newListing.quantity) {
-        fieldChanges.push({
-          field: 'quantity',
-          before: existing.quantity,
-          after: newListing.quantity,
-          changeType: 'modified',
-        })
-      }
-    }
-
-    // SKU (only if not on property)
-    if (newListing.sku !== '' && existing.inventory.sku_on_property.length === 0) {
-      let existingSKU = ''
-      if (
-        existing.inventory.products.length > 0 &&
-        !existing.inventory.products[0].is_deleted
-      ) {
-        existingSKU = existing.inventory.products[0].sku
-      }
-      if (newListing.sku !== existingSKU) {
-        fieldChanges.push({
-          field: 'sku',
-          before: existingSKU,
-          after: newListing.sku,
-          changeType: 'modified',
-        })
-      }
-    }
-
-    // Compare variations
-    const variationChanges: VariationChange[] = []
-    if (newListing.hasVariations) {
-      // Create map of existing variations by product ID
-      const existingVariationsMap = new Map<
-        number,
-        Listing['inventory']['products'][0]
-      >()
-      for (const product of existing.inventory.products) {
-        if (!product.is_deleted) {
-          existingVariationsMap.set(product.product_id, product)
-        }
-      }
-
-      // Process new variations
-      for (let i = 0; i < newListing.variations.length; i++) {
-        const newVariation = newListing.variations[i]
-        const varChangeID = `${changeID}_var_${i}`
-
-        if (newVariation.toDelete) {
-          // Variation deletion
-          if (newVariation.productID > 0) {
-            if (existingVariationsMap.has(newVariation.productID)) {
-              variationChanges.push({
-                changeId: varChangeID,
-                variationId: newVariation.productID.toString(),
-                changeType: 'delete',
-                fieldChanges: [],
-              })
-            }
-          }
-          continue
-        }
-
-        // Check if variation exists
-        if (newVariation.productID > 0) {
-          const existingVar = existingVariationsMap.get(newVariation.productID)
-          if (existingVar) {
-            // Update existing variation
-            const varChanges = compareVariation(
-              existingVar,
-              newVariation,
-              existing.inventory
-            )
-            if (varChanges.length > 0) {
-              variationChanges.push({
-                changeId: varChangeID,
-                variationId: newVariation.productID.toString(),
-                changeType: 'update',
-                fieldChanges: varChanges,
-              })
-            }
-          } else {
-            // New variation (product ID doesn't exist)
-            const varChanges: FieldChange[] = []
-            if (newVariation.propertyOption1 !== '') {
-              varChanges.push({
-                field: 'property_option_1',
-                before: null,
-                after: normalizeDescription(newVariation.propertyOption1),
-                changeType: 'added',
-              })
-            }
-            if (newVariation.propertyPrice !== null) {
-              varChanges.push({
-                field: 'price',
-                before: null,
-                after: newVariation.propertyPrice.toFixed(2),
-                changeType: 'added',
-              })
-            }
-            if (newVariation.propertyQuantity !== null) {
-              varChanges.push({
-                field: 'quantity',
-                before: null,
-                after: newVariation.propertyQuantity,
-                changeType: 'added',
-              })
-            }
-            if (newVariation.propertySKU !== '') {
-              varChanges.push({
-                field: 'sku',
-                before: null,
-                after: newVariation.propertySKU,
-                changeType: 'added',
-              })
-            }
-
-            variationChanges.push({
-              changeId: varChangeID,
-              variationId: `new_${i}`,
-              changeType: 'create',
-              fieldChanges: varChanges,
-            })
-          }
-        } else {
-          // New variation (no product ID)
-          const varChanges: FieldChange[] = []
-          if (newVariation.propertyOption1 !== '') {
-            varChanges.push({
-              field: 'property_option_1',
-              before: null,
-              after: normalizeDescription(newVariation.propertyOption1),
-              changeType: 'added',
-            })
-          }
-          if (newVariation.propertyPrice !== null) {
-            varChanges.push({
-              field: 'price',
-              before: null,
-              after: newVariation.propertyPrice.toFixed(2),
-              changeType: 'added',
-            })
-          }
-          if (newVariation.propertyQuantity !== null) {
-            varChanges.push({
-              field: 'quantity',
-              before: null,
-              after: newVariation.propertyQuantity,
-              changeType: 'added',
-            })
-          }
-
-          variationChanges.push({
-            changeId: varChangeID,
-            variationId: `new_${i}`,
-            changeType: 'create',
-            fieldChanges: varChanges,
-          })
-        }
-      }
-
-      // Check for deleted variations (existing not in new)
-      for (const productID of existingVariationsMap.keys()) {
-        const found = newListing.variations.some(
-          (v) => v.productID === productID && !v.toDelete
-        )
-        if (!found) {
-          // Variation deleted
-          variationChanges.push({
-            changeId: `${changeID}_var_del_${productID}`,
-            variationId: productID.toString(),
-            changeType: 'delete',
-            fieldChanges: [],
-          })
-        }
-      }
     } else {
-      // Non-variation listing - compare single product
-      if (
-        existing.inventory.products.length > 0 &&
-        !existing.inventory.products[0].is_deleted
-      ) {
-        const existingProduct = existing.inventory.products[0]
-        const varChanges = compareNonVariationProduct(
-          existingProduct,
-          newListing,
-          existing.inventory
-        )
-        if (varChanges.length > 0) {
-          variationChanges.push({
-            changeId: `${changeID}_product`,
-            variationId: existingProduct.product_id.toString(),
-            changeType: 'update',
-            fieldChanges: varChanges,
-          })
-        }
+      // New variation (no product ID) - this is always a new variation
+      const varChanges: FieldChange[] = []
+      if (newVariation.propertyOption1 !== '') {
+        varChanges.push(createAddedField('property_option_1', normalizeDescription(newVariation.propertyOption1)))
       }
-    }
+      if (newVariation.propertyOption2 !== '') {
+        varChanges.push(createAddedField('property_option_2', normalizeDescription(newVariation.propertyOption2)))
+      }
+      if (newVariation.propertyPrice !== null) {
+        varChanges.push(createAddedField('price', newVariation.propertyPrice.toFixed(2)))
+      }
+      if (newVariation.propertyQuantity !== null) {
+        varChanges.push(createAddedField('quantity', newVariation.propertyQuantity))
+      }
+      if (newVariation.propertySKU !== '') {
+        varChanges.push(createAddedField('sku', newVariation.propertySKU))
+      }
 
-    // Only add change if there are actual changes
-    if (fieldChanges.length > 0 || variationChanges.length > 0) {
-      changes.push({
-        changeId: changeID,
-        changeType: 'update',
-        listingId: newListing.listingID,
-        title: newListing.title,
-        fieldChanges,
-        variationChanges,
+      variationChanges.push({
+        changeId: varChangeID,
+        variationId: `new_${i}`,
+        changeType: 'create',
+        fieldChanges: varChanges,
       })
     }
   }
 
-  // Build summary
+  // Check for deleted variations (existing not in new)
+  // BUT: if converting from non-variation to variation, don't mark the single product as deleted
+  // unless it's explicitly in the new variations list with a matching product ID
+  for (const productID of existingVariationsMap.keys()) {
+    // If converting to variations and this is the only product, check if it should be converted
+    if (isConvertingToVariations && existingVariationsMap.size === 1) {
+      // The single product might become the first variation - check if it matches any new variation
+      const matchesNewVariation = newListing.variations.some(
+        (v) => v.productID === productID && !v.toDelete
+      )
+      if (!matchesNewVariation) {
+        // The single product is being replaced by variations - this is expected
+        // Don't mark it as deleted, it will be handled by the inventory update
+        continue
+      }
+    }
+    
+    const found = newListing.variations.some(
+      (v) => v.productID === productID && !v.toDelete
+    )
+    if (!found) {
+      variationChanges.push({
+        changeId: `${changeID}_var_del_${productID}`,
+        variationId: productID.toString(),
+        changeType: 'delete',
+        fieldChanges: [],
+      })
+    }
+  }
+
+  return variationChanges
+}
+
+function handleUpdateChange(
+  newListing: ProcessedListing,
+  existing: Listing,
+  changeID: string
+): PreviewChange | null {
+  const fieldChanges = compareListingFields(newListing, existing)
+  const variationChanges = compareVariations(newListing, existing, changeID)
+  
+  if (fieldChanges.length === 0 && variationChanges.length === 0) {
+    return null // No changes
+  }
+  
+  return {
+    changeId: changeID,
+    changeType: 'update',
+    listingId: newListing.listingID,
+    title: newListing.title,
+    fieldChanges,
+    variationChanges,
+  }
+}
+
+function buildPreviewResponse(changes: PreviewChange[]): PreviewResponse {
   const summary = {
     totalChanges: changes.length,
     creates: 0,
@@ -779,5 +709,55 @@ export async function previewUploadCSV(file: File): Promise<PreviewResponse> {
     changes,
     summary,
   }
+}
+
+// ============================================================================
+// Main Function
+// ============================================================================
+
+// Generate preview of changes
+export async function previewUploadCSV(file: File): Promise<PreviewResponse> {
+  await getValidAccessToken()
+  const newListings = await parseUploadCSV(file)
+
+  const listingIDsToFetch = newListings
+    .filter(l => l.listingID > 0 && !l.toDelete)
+    .map(l => l.listingID)
+
+  const existingListingsMap = await fetchExistingListings(listingIDsToFetch)
+
+  const changes: PreviewChange[] = []
+  let changeCounter = 0
+
+  for (const newListing of newListings) {
+    changeCounter++
+    const changeID = `change_${changeCounter}`
+
+    // Handle delete
+    if (newListing.toDelete) {
+      const deleteChange = handleDeleteChange(
+        newListing,
+        existingListingsMap.get(newListing.listingID),
+        changeID
+      )
+      if (deleteChange) changes.push(deleteChange)
+      continue
+    }
+
+    // Handle create
+    if (newListing.listingID === 0) {
+      changes.push(handleCreateChange(newListing, changeID))
+      continue
+    }
+
+    // Handle update
+    const existing = existingListingsMap.get(newListing.listingID)
+    if (!existing) continue
+
+    const updateChange = handleUpdateChange(newListing, existing, changeID)
+    if (updateChange) changes.push(updateChange)
+  }
+
+  return buildPreviewResponse(changes)
 }
 

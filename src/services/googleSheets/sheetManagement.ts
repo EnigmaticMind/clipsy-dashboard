@@ -142,7 +142,8 @@ async function searchDriveForSheet(shopId: number, shopName: string): Promise<Sh
       shopName: shopName,
       createdAt: sheet.createdTime ? new Date(sheet.createdTime).getTime() : Date.now(),
       lastSynced: Date.now(),
-      version: 1
+      version: 1,
+      appVersion: APP_VERSION // Store Clipsy app version
     }
     
     return metadata
@@ -265,7 +266,8 @@ async function createNewSheet(shopId: number, shopName: string): Promise<SheetMe
     shopName,
     createdAt: Date.now(),
     lastSynced: Date.now(),
-    version: 1
+    version: 1,
+    appVersion: APP_VERSION // Store Clipsy app version
   }
   
   // Save to storage
@@ -281,6 +283,8 @@ export async function updateSheetMetadata(metadata: SheetMetadata): Promise<void
   
   metadata.lastSynced = Date.now()
   metadata.version++
+  // Update app version to current version
+  metadata.appVersion = APP_VERSION
   
   await chrome.storage.local.set({ [storageKey]: metadata })
 }

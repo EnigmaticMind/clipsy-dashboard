@@ -4,6 +4,7 @@ import { getValidAccessToken } from '../googleSheetsOAuth'
 import { GOOGLE_SHEETS_API_BASE } from './types'
 import { findHeaderRowIndex, isEmpty } from '../../utils/dataParsing'
 import { LISTING_COLUMN_COUNT, COLUMNS } from './constants'
+import { APP_VERSION } from '../../constants/version'
 
 // Read listings from Google Sheet and return as CSV File
 export async function readListingsFromSheetAsFile(sheetId: string): Promise<File> {
@@ -105,9 +106,10 @@ export async function readListingsFromSheetAsFile(sheetId: string): Promise<File
   // Create CSV content with CRLF line endings (Excel-friendly)
   const csvContent = csvLines.join('\r\n')
   
-  // Create File object from CSV content
+  // Create File object from CSV content with version in filename
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
-  const file = new File([blob], 'google-sheets-export.csv', { type: 'text/csv' })
+  const filename = `clipsy-google-sheets-export-v${APP_VERSION}.csv`
+  const file = new File([blob], filename, { type: 'text/csv' })
   
   return file
 }

@@ -279,3 +279,87 @@ export function extractErrorMessage(
   return message
 }
 
+// ============================================================================
+// HTML Entity Encoding/Decoding
+// ============================================================================
+
+/**
+ * Decode HTML entities (works in service workers without DOM)
+ * Converts &quot; to ", &amp; to &, etc.
+ */
+export function decodeHTMLEntities(s: string): string {
+  if (!s) return s;
+  
+  // Common HTML entities mapping
+  const entityMap: Record<string, string> = {
+    '&amp;': '&',
+    '&lt;': '<',
+    '&gt;': '>',
+    '&quot;': '"',
+    '&#39;': "'",
+    '&apos;': "'",
+    '&nbsp;': ' ',
+    '&copy;': '©',
+    '&reg;': '®',
+    '&trade;': '™',
+  };
+  
+  let decoded = s;
+  
+  // Replace named entities
+  for (const [entity, char] of Object.entries(entityMap)) {
+    decoded = decoded.replace(new RegExp(entity, 'g'), char);
+  }
+  
+  // Handle numeric entities like &#39; or &#x27;
+  decoded = decoded.replace(/&#(\d+);/g, (_match, numStr) => {
+    const num = parseInt(numStr, 10);
+    return String.fromCharCode(num);
+  });
+  
+  // Handle hex entities like &#x27;
+  decoded = decoded.replace(/&#x([0-9a-fA-F]+);/g, (_match, hexStr) => {
+    const num = parseInt(hexStr, 16);
+    return String.fromCharCode(num);
+  });
+  
+  // If document is available (not in service worker), use it as fallback for complex entities
+  if (typeof document !== 'undefined') {
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.innerHTML = decoded;
+      decoded = textarea.value;
+    } catch {
+      // If document.createElement fails, use the decoded string as-is
+    }
+  }
+  
+  return decoded;
+}
+
+/**
+ * Encode HTML entities for safe transmission to Etsy API
+ * Converts " to &quot;, & to &amp;, etc.
+ */
+export function encodeHTMLEntities(s: string): string {
+  if (!s) return s;
+  
+  // Map of characters to HTML entities (order matters - & must be first)
+  const charMap: Record<string, string> = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  };
+  
+  let encoded = s;
+  
+  // Replace characters with entities (must do & first to avoid double-encoding)
+  for (const [char, entity] of Object.entries(charMap)) {
+    encoded = encoded.replace(new RegExp(char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), entity);
+  }
+  
+  return encoded;
+}
+

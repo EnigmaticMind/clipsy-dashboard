@@ -217,3 +217,168 @@ export function groupListingsByStatus(listings: ListingsResponse): Map<ListingSt
   return listingsByStatus
 }
 
+// Delete rows from a sheet
+export async function deleteSheetRows(
+  sheetId: string,
+  sheetName: string,
+  rowIndices: number[] // 1-based row indices (row 1 is header)
+): Promise<void> {
+  if (rowIndices.length === 0) return
+  
+  const token = await getValidAccessToken()
+  
+  // Get sheet ID (not the spreadsheet ID, but the individual sheet's ID)
+  const spreadsheetResponse = await fetch(
+    `${GOOGLE_SHEETS_API_BASE}/spreadsheets/${sheetId}`,
+    {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    }
+  )
+  
+  if (!spreadsheetResponse.ok) {
+    throw new Error('Failed to get spreadsheet info for row deletion')
+  }
+  
+  const spreadsheet = await spreadsheetResponse.json()
+  const sheets = spreadsheet.sheets || []
+  const targetSheet = sheets.find((s: any) => s.properties.title === sheetName)
+  
+  if (!targetSheet) {
+    throw new Error(`Sheet "${sheetName}" not found`)
+  }
+  
+  const sheetIdNum = targetSheet.properties.sheetId
+  
+  // Sort row indices in descending order to delete from bottom to top
+  // This prevents index shifting issues
+  const sortedIndices = [...rowIndices].sort((a, b) => b - a)
+  
+  // Create delete dimension requests (delete in batches to avoid rate limits)
+  const batchSize = 100
+  for (let i = 0; i < sortedIndices.length; i += batchSize) {
+    const batch = sortedIndices.slice(i, i + batchSize)
+    
+    const requests = batch.map(rowIndex => ({
+      deleteDimension: {
+        range: {
+          sheetId: sheetIdNum,
+          dimension: 'ROWS',
+          startIndex: rowIndex - 1, // Convert to 0-based
+          endIndex: rowIndex // endIndex is exclusive
+        }
+      }
+    }))
+    
+    const response = await fetch(
+      `${GOOGLE_SHEETS_API_BASE}/spreadsheets/${sheetId}:batchUpdate`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          requests: requests
+        })
+      }
+    )
+    
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to delete rows' }))
+      throw new Error(error.error || error.message || 'Failed to delete rows from Google Sheet')
+    }
+    
+    // Rate limit: small delay between batches
+    if (i + batchSize < sortedIndices.length) {
+      await new Promise(resolve => setTimeout(resolve, 200))
+    }
+  }
+}
+
+// Add new function for batch row updates
+export async function batchUpdateMultipleRows(
+  sheetId: string,
+  sheetName: string,
+  updates: Array<{ rowIndex: number; data: string[] }>
+): Promise<void> {
+  if (updates.length === 0) return
+  
+  const token = await getValidAccessToken()
+  
+  // Get sheet ID
+  const spreadsheetResponse = await fetch(
+    `${GOOGLE_SHEETS_API_BASE}/spreadsheets/${sheetId}`,
+    {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    }
+  )
+  
+  if (!spreadsheetResponse.ok) {
+    throw new Error('Failed to get spreadsheet info')
+  }
+  
+  const spreadsheet = await spreadsheetResponse.json()
+  const sheets = spreadsheet.sheets || []
+  const targetSheet = sheets.find((s: any) => s.properties.title === sheetName)
+  
+  if (!targetSheet) {
+    throw new Error(`Sheet "${sheetName}" not found`)
+  }
+  
+  // Group updates by consecutive rows to minimize API calls
+  // Sort by row index
+  const sortedUpdates = [...updates].sort((a, b) => a.rowIndex - b.rowIndex)
+  
+  // Create batch update requests (Google Sheets API allows up to 10 requests per batchUpdate)
+  const batchSize = 10
+  for (let i = 0; i < sortedUpdates.length; i += batchSize) {
+    const batch = sortedUpdates.slice(i, i + batchSize)
+    
+    const requests = batch.map(update => ({
+      updateCells: {
+        range: {
+          sheetId: targetSheet.properties.sheetId,
+          startRowIndex: update.rowIndex - 1, // Convert to 0-based
+          endRowIndex: update.rowIndex,
+          startColumnIndex: 0,
+          endColumnIndex: update.data.length
+        },
+        rows: [{
+          values: update.data.map(cell => ({
+            userEnteredValue: { stringValue: cell }
+          }))
+        }],
+        fields: 'userEnteredValue'
+      }
+    }))
+    
+    const response = await fetch(
+      `${GOOGLE_SHEETS_API_BASE}/spreadsheets/${sheetId}:batchUpdate`,
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          requests: requests
+        })
+      }
+    )
+    
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: 'Failed to batch update' }))
+      throw new Error(error.error || error.message || 'Failed to batch update Google Sheet')
+    }
+    
+    // Rate limit between batches
+    if (i + batchSize < sortedUpdates.length) {
+      await new Promise(resolve => setTimeout(resolve, 200))
+    }
+  }
+}
+

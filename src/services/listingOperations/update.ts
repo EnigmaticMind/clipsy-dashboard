@@ -3,6 +3,7 @@
 import { ProcessedListing } from '../uploadService'
 import { Listing, makeEtsyRequest } from '../etsyApi'
 import { tagsEqual } from './helpers'
+import { encodeHTMLEntities } from '../../utils/dataParsing'
 
 // Update an existing listing (only if changed)
 export async function updateListing(
@@ -16,14 +17,16 @@ export async function updateListing(
   const requestBody: any = {}
 
   if (existingListing === null || existingListing.title !== listing.title) {
-    requestBody.title = listing.title
+    // Encode HTML entities for Etsy API (e.g., " becomes &quot;)
+    requestBody.title = encodeHTMLEntities(listing.title)
     needsUpdate = true
   }
   if (
     existingListing === null ||
     existingListing.description !== listing.description
   ) {
-    requestBody.description = listing.description
+    // Encode HTML entities for Etsy API (e.g., " becomes &quot;)
+    requestBody.description = encodeHTMLEntities(listing.description)
     needsUpdate = true
   }
   if (

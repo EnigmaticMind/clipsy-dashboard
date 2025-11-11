@@ -7,7 +7,8 @@ export interface SheetMetadata {
   shopName: string
   createdAt: number
   lastSynced: number
-  version: number
+  version: number // Internal version counter for tracking syncs
+  appVersion?: string // Clipsy app version from package.json (e.g., "1.0.0")
 }
 
 export const GOOGLE_SHEETS_API_BASE = 'https://sheets.googleapis.com/v4'

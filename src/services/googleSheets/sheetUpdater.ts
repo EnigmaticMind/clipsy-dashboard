@@ -1,16 +1,121 @@
-// Sheet updating functions - updating IDs in sheets
+// Sheet updating functions - updating IDs and data in sheets
 
 import { getValidAccessToken } from '../googleSheetsOAuth'
 import { Listing } from '../etsyApi'
 import { logger } from '../../utils/logger'
 import { GOOGLE_SHEETS_API_BASE } from './types'
-import { isEmpty } from '../../utils/dataParsing'
+import { isEmpty, decodeHTMLEntities } from '../../utils/dataParsing'
 import { verifySheetExists, getOrCreateSheet } from './sheetManagement'
 import { readSheetData, batchUpdateSheet } from './sheetUtils'
 import { COLUMNS, getHeaderValue, LISTING_COLUMN_COUNT } from './constants'
 
-// Update IDs in Google Sheet after creating listings or variations
-// This function finds rows matching the listing and updates all IDs (listing ID, product IDs, property IDs)
+// Helper function to build a row from Etsy listing data (for listing row)
+function buildListingRowFromEtsy(listing: Listing): string[] {
+  const row: string[] = Array(LISTING_COLUMN_COUNT).fill('')
+  
+  row[COLUMNS.listing_id] = listing.listing_id.toString()
+  row[COLUMNS.title] = decodeHTMLEntities(listing.title)
+  row[COLUMNS.description] = decodeHTMLEntities(listing.description)
+  row[COLUMNS.status] = listing.state
+  row[COLUMNS.tags] = listing.tags.join(',')
+  row[COLUMNS.currency_code] = listing.price.currency_code
+  row[COLUMNS.materials] = listing.materials?.join(', ') || ''
+  row[COLUMNS.shipping_profile_id] = listing.shipping_profile_id?.toString() || ''
+  row[COLUMNS.processing_min] = listing.processing_min?.toString() || ''
+  row[COLUMNS.processing_max] = listing.processing_max?.toString() || ''
+  
+  // For non-variation listings, set price/quantity/SKU on listing row
+  if (!listing.has_variations) {
+    const product = listing.inventory?.products?.find((p) => !p.is_deleted)
+    if (product) {
+      row[COLUMNS.product_id] = product.product_id.toString()
+      row[COLUMNS.sku] = product.sku
+      const offering = product.offerings.find((o) => !o.is_deleted)
+      if (offering) {
+        const priceVal = offering.price.amount / offering.price.divisor
+        row[COLUMNS.price] = priceVal.toFixed(2)
+        row[COLUMNS.quantity] = offering.quantity.toString()
+      }
+    }
+  }
+  
+  return row
+}
+
+// Helper function to build a variation row from Etsy product data
+function buildVariationRowFromEtsy(listing: Listing, product: Listing['inventory']['products'][0]): string[] {
+  const row: string[] = Array(LISTING_COLUMN_COUNT).fill('')
+  
+  // Set listing ID (for reference, but variation rows don't show other listing info)
+  row[COLUMNS.listing_id] = listing.listing_id.toString()
+  
+  // Get property values
+  const prop1 = product.property_values?.[0]
+  const prop2 = product.property_values?.[1]
+  
+  // Build variation display
+  let variationDisplay = 'N/A'
+  if (prop1 && prop1.values.length > 0) {
+    variationDisplay = prop1.values.join(', ')
+    if (prop2 && prop2.values.length > 0) {
+      variationDisplay += ' / ' + prop2.values.join(', ')
+    }
+  } else if (prop2 && prop2.values.length > 0) {
+    variationDisplay = prop2.values.join(', ')
+  }
+  
+  row[COLUMNS.variation] = variationDisplay
+  row[COLUMNS.property_name_1] = prop1?.property_name || ''
+  row[COLUMNS.property_option_1] = prop1 ? prop1.values.join(', ') : ''
+  row[COLUMNS.property_name_2] = prop2?.property_name || ''
+  row[COLUMNS.property_option_2] = prop2 ? prop2.values.join(', ') : ''
+  
+  // Determine price, quantity, SKU locations
+  const hasPriceOnProperty = listing.inventory.price_on_property.length > 0
+  const hasQuantityOnProperty = listing.inventory.quantity_on_property.length > 0
+  const hasSKUOnProperty = listing.inventory.sku_on_property.length > 0
+  
+  const offering = product.offerings.find((o) => !o.is_deleted)
+  if (offering) {
+    if (hasPriceOnProperty) {
+      const priceVal = offering.price.amount / offering.price.divisor
+      row[COLUMNS.variation_price] = priceVal.toFixed(2)
+    } else {
+      const priceVal = offering.price.amount / offering.price.divisor
+      row[COLUMNS.price] = priceVal.toFixed(2)
+    }
+    
+    if (hasQuantityOnProperty) {
+      row[COLUMNS.variation_quantity] = offering.quantity.toString()
+    } else {
+      row[COLUMNS.quantity] = offering.quantity.toString()
+    }
+  }
+  
+  if (hasSKUOnProperty) {
+    row[COLUMNS.variation_sku] = product.sku
+  } else {
+    row[COLUMNS.sku] = product.sku
+  }
+  
+  row[COLUMNS.currency_code] = listing.price.currency_code
+  row[COLUMNS.product_id] = product.product_id.toString()
+  
+  if (prop1) {
+    row[COLUMNS.property_id_1] = prop1.property_id.toString()
+    row[COLUMNS.property_option_ids_1] = (prop1.value_ids || []).join(',')
+  }
+  
+  if (prop2) {
+    row[COLUMNS.property_id_2] = prop2.property_id.toString()
+    row[COLUMNS.property_option_ids_2] = (prop2.value_ids || []).join(',')
+  }
+  
+  return row
+}
+
+// Update IDs and data in Google Sheet after creating/updating listings or variations
+// This function finds rows matching the listing and updates all data from Etsy to reflect actual state
 export async function updateSheetIDs(
   shopId: number,
   listingId: number,
@@ -102,6 +207,12 @@ export async function updateSheetIDs(
       // Find rows matching this listing
       // Match by: listing title, SKU, or variation SKU
       const rowsToUpdate: Array<{ rowIndex: number; data: string[] }> = []
+      const rowsToAppend: string[][] = []
+      
+      // Track which products from Etsy have been matched to existing rows
+      const matchedProductIds = new Set<number>()
+      let listingRowIndex: number | null = null
+      let listingRowUpdated = false
       
       for (let i = headerRowIndex + 1; i < rows.length; i++) {
         const row = rows[i] || []
@@ -138,15 +249,14 @@ export async function updateSheetIDs(
         }
         
         if (matches) {
-          // Update this row with IDs from the listing
-          const updatedRow = [...row]
+          // Determine if this is a listing row or variation row
+          const isVariationRow = existingProductId || existingVariationSKU || 
+            (row[COLUMNS.property_option_1]?.trim() || row[COLUMNS.property_option_2]?.trim())
           
-          // Update Listing ID
-          updatedRow[COLUMNS.listing_id] = listingId.toString()
+          let updatedRow: string[]
           
-          // Update Product ID (column 21) and Property IDs (columns 22-25) for variations
-          if (listing.has_variations && listing.inventory?.products) {
-            // Find matching product by SKU or property values
+          if (isVariationRow && listing.has_variations && listing.inventory?.products) {
+            // This is a variation row - find matching product and update with full variation data
             let matchingProduct: Listing['inventory']['products'][0] | undefined = undefined
             
             if (existingVariationSKU) {
@@ -159,8 +269,8 @@ export async function updateSheetIDs(
               )
             } else {
               // Match by property values
-              const existingProp1 = row[COLUMNS.property_option_1]?.trim() // Property Option 1
-              const existingProp2 = row[COLUMNS.property_option_2]?.trim() // Property Option 2
+              const existingProp1 = row[COLUMNS.property_option_1]?.trim()
+              const existingProp2 = row[COLUMNS.property_option_2]?.trim()
               
               matchingProduct = listing.inventory.products.find((p) => {
                 if (p.is_deleted) return false
@@ -173,36 +283,92 @@ export async function updateSheetIDs(
             }
             
             if (matchingProduct) {
-              // Update Product ID
-              updatedRow[COLUMNS.product_id] = matchingProduct.product_id.toString()
-              
-              // Update Property IDs
-              const prop1 = matchingProduct.property_values?.[0]
-              const prop2 = matchingProduct.property_values?.[1]
-              
-              if (prop1) {
-                updatedRow[COLUMNS.property_id_1] = prop1.property_id.toString() // Property ID 1
-                updatedRow[COLUMNS.property_option_ids_1] = (prop1.value_ids || []).join(',') // Property Option IDs 1
-              }
-              
-              if (prop2) {
-                updatedRow[COLUMNS.property_id_2] = prop2.property_id.toString() // Property ID 2
-                updatedRow[COLUMNS.property_option_ids_2] = (prop2.value_ids || []).join(',') // Property Option IDs 2
-              }
+              // Build full variation row from Etsy data
+              updatedRow = buildVariationRowFromEtsy(listing, matchingProduct)
+              matchedProductIds.add(matchingProduct.product_id)
+            } else {
+              // Product not found - skip this row (might have been deleted)
+              continue
             }
           } else {
-            // Non-variation listing - update product ID from first product
-            const product = listing.inventory?.products?.find((p) => !p.is_deleted)
-            if (product) {
-              updatedRow[COLUMNS.product_id] = product.product_id.toString()
-            }
+            // This is a listing row - update with full listing data
+            updatedRow = buildListingRowFromEtsy(listing)
+            listingRowIndex = i + 1
+            listingRowUpdated = true
           }
           
           rowsToUpdate.push({ rowIndex: i + 1, data: updatedRow }) // +1 because Sheets API is 1-based
         }
       }
       
-      // Update rows in batches
+      // For variation listings, check if we need to add new variation rows
+      if (listing.has_variations && listing.inventory?.products) {
+        // Find listing row index if we didn't update it yet
+        if (!listingRowIndex) {
+          // Look for listing row
+          for (let i = headerRowIndex + 1; i < rows.length; i++) {
+            const row = rows[i] || []
+            const existingListingId = row[COLUMNS.listing_id]?.trim()
+            const existingTitle = row[COLUMNS.title]?.trim()
+            const isVariationRow = row[COLUMNS.property_option_1]?.trim() || row[COLUMNS.property_option_2]?.trim()
+            
+            if (!isVariationRow && (
+              (existingListingId && existingListingId === listingId.toString()) ||
+              (existingTitle && existingTitle === listing.title)
+            )) {
+              listingRowIndex = i + 1
+              // Update listing row if we haven't already
+              if (!listingRowUpdated) {
+                const updatedRow = buildListingRowFromEtsy(listing)
+                rowsToUpdate.push({ rowIndex: listingRowIndex, data: updatedRow })
+                listingRowUpdated = true
+              }
+              break
+            }
+          }
+        }
+        
+        // If no listing row found, we need to add it first
+        if (!listingRowIndex) {
+          const listingRow = buildListingRowFromEtsy(listing)
+          // Append listing row at the end
+          rowsToAppend.push(listingRow)
+          // Set listingRowIndex to the position where it will be (after all existing rows)
+          listingRowIndex = rows.length + 1
+        }
+        
+        // Add any products that weren't matched (new variations)
+        for (const product of listing.inventory.products) {
+          if (product.is_deleted) continue
+          if (!matchedProductIds.has(product.product_id)) {
+            const variationRow = buildVariationRowFromEtsy(listing, product)
+            rowsToAppend.push(variationRow)
+          }
+        }
+      } else if (!listingRowUpdated) {
+        // Non-variation listing - ensure listing row exists and is updated
+        // This should have been handled above, but double-check
+        let foundListingRow = false
+        for (let i = headerRowIndex + 1; i < rows.length; i++) {
+          const row = rows[i] || []
+          const existingListingId = row[COLUMNS.listing_id]?.trim()
+          const existingTitle = row[COLUMNS.title]?.trim()
+          
+          if ((existingListingId && existingListingId === listingId.toString()) ||
+              (existingTitle && existingTitle === listing.title)) {
+            foundListingRow = true
+            break
+          }
+        }
+        
+        if (!foundListingRow) {
+          // Add listing row if it doesn't exist
+          const listingRow = buildListingRowFromEtsy(listing)
+          rowsToAppend.push(listingRow)
+        }
+      }
+      
+      // Update existing rows
       if (rowsToUpdate.length > 0) {
         // Update each row individually using batchUpdateSheet
         for (const { rowIndex, data } of rowsToUpdate) {
@@ -217,11 +383,35 @@ export async function updateSheetIDs(
           await new Promise(resolve => setTimeout(resolve, 100))
         }
         
-        logger.log(`Updated ${rowsToUpdate.length} row(s) in sheet "${sheetName}" with IDs for listing ${listingId}`)
+        logger.log(`Updated ${rowsToUpdate.length} row(s) in sheet "${sheetName}" with data from Etsy for listing ${listingId}`)
+      }
+      
+      // Append new rows (new variations or listing row if missing)
+      if (rowsToAppend.length > 0) {
+        // Find the position to insert: after listing row, or at end if no listing row
+        let insertRowIndex = rows.length + 1 // Default: append at end
+        
+        if (listingRowIndex) {
+          // Insert after listing row
+          insertRowIndex = listingRowIndex + 1
+        }
+        
+        // Prepare all rows to append
+        const paddedRows = rowsToAppend.map(newRow => 
+          newRow.length < LISTING_COLUMN_COUNT 
+            ? [...newRow, ...Array(LISTING_COLUMN_COUNT - newRow.length).fill('')]
+            : newRow
+        )
+        
+        // Append all rows in a single batch operation
+        // Google Sheets API will automatically insert rows when the range extends beyond existing data
+        await batchUpdateSheet(sheetId, sheetName, paddedRows, insertRowIndex)
+        
+        logger.log(`Added ${rowsToAppend.length} new row(s) to sheet "${sheetName}" for listing ${listingId}`)
       }
     }
   } catch (error) {
-    logger.error('Error updating sheet IDs:', error)
+    logger.error('Error updating sheet data:', error)
     // Don't throw - this is a non-critical operation
   }
 }
