@@ -240,7 +240,7 @@ The extension requires the following permissions:
 
 - Verify your Etsy Client ID is set correctly in `src/services/oauth.ts` and `src/services/etsyApi.ts`
 - Make sure the Client ID is from an active Etsy app
-- Check that the app has the required scopes: `listings_r`, `listings_w`, `shops_r`
+- Check that the app has the required scopes: `listings_r`, `listings_w`, `listings_d`, `shops_r`
 
 ### CSV upload fails
 
@@ -336,6 +336,7 @@ Make sure your Etsy app has the following scopes enabled:
 
 - `listings_r` - Read listings
 - `listings_w` - Write listings
+- `listings_d` - Delete listings
 - `shops_r` - Read shop information
 
 These scopes are typically enabled by default for new apps.

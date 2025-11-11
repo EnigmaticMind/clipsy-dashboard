@@ -22,7 +22,7 @@ export { writeListingsToSheet, mergeRowData } from './sheetWriter'
 export { readListingsFromSheetAsFile, getSheetRowCount } from './sheetReader'
 
 // Re-export updater functions
-export { updateSheetIDs } from './sheetUpdater'
+export { updateSheetIDs, removeDeletedItemsFromSheet } from './sheetUpdater'
 
 // Re-export utility functions (for internal use, but available if needed)
 export {

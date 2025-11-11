@@ -4,6 +4,7 @@
 import { logger } from '../utils/logger'
 
 const ETSY_AUTH_URL = 'https://www.etsy.com/oauth/connect'
+const ETSY_SIGNIN_URL = 'https://www.etsy.com/oauth2/signin'
 const ETSY_TOKEN_URL = 'https://api.etsy.com/v3/public/oauth/token'
 
 // Get Etsy Client ID - hardcoded for extension
@@ -91,9 +92,10 @@ export async function initOAuthFlow(): Promise<{ authUrl: string; state: string;
 
   logger.log('Redirect URL:', redirectURL)
   
-  const scopes = ['listings_r', 'listings_w', 'shops_r']
+  const scopes = ['listings_r', 'listings_w', 'shops_r', 'listings_d']
   
-  const params = new URLSearchParams({
+  // First, construct the OAuth connect URL
+  const oauthParams = new URLSearchParams({
     response_type: 'code',
     redirect_uri: redirectURL,
     scope: scopes.join(' '),
@@ -103,17 +105,32 @@ export async function initOAuthFlow(): Promise<{ authUrl: string; state: string;
     state: state,
   })
   
-  const authUrl = `${ETSY_AUTH_URL}?${params.toString()}`
+  const oauthConnectUrl = `${ETSY_AUTH_URL}?${oauthParams.toString()}`
   
+  // Use the signin URL directly with from_page parameter
+  // This works around chrome.identity.launchWebAuthFlow not handling redirects properly
+  // The signin URL works both when logged in and when not logged in, and is less likely to be blocked
+  const signinParams = new URLSearchParams({
+    from_page: oauthConnectUrl,
+    lp: '1',
+    show_social_sign_in: '1',
+    is_from_etsyapp: '0',
+    initial_state: 'sign-in',
+    client_id: clientID,
+  })
+  
+  const authUrl = `${ETSY_SIGNIN_URL}?${signinParams.toString()}`
+
   // Store code verifier and state in sessionStorage for later use
   sessionStorage.setItem('oauth_code_verifier', codeVerifier)
   sessionStorage.setItem('oauth_state', state)
   sessionStorage.setItem('oauth_redirect_uri', redirectURL)
-  
+
   // For Chrome extension, launch auth flow directly
   if (typeof chrome !== 'undefined' && chrome.identity && chrome.identity.launchWebAuthFlow) {
     logger.log('Starting OAuth flow with redirect URL:', redirectURL)
-    logger.log('Auth URL:', authUrl)
+    logger.log('OAuth connect URL:', oauthConnectUrl)
+    logger.log('Auth URL (signin):', authUrl)
     
     return new Promise((resolve, reject) => {
       chrome.identity.launchWebAuthFlow(
@@ -123,6 +140,10 @@ export async function initOAuthFlow(): Promise<{ authUrl: string; state: string;
           if (chrome.runtime.lastError) {
             const errorMsg = chrome.runtime.lastError.message
             logger.error('OAuth error:', errorMsg)
+            logger.error('Chrome runtime error details:', {
+              message: chrome.runtime.lastError.message,
+              error: chrome.runtime.lastError
+            })
 
             // Provide more helpful error messages
             if (errorMsg && (errorMsg.includes('redirect_uri_mismatch') || errorMsg.includes('redirect'))) {
@@ -131,12 +152,34 @@ export async function initOAuthFlow(): Promise<{ authUrl: string; state: string;
                 `Go to https://www.etsy.com/developers and add this URL to your app's redirect URIs.`
               ))
             } else if (errorMsg && errorMsg.includes('Authorization page could not be loaded')) {
-              reject(new Error(
-                `Authorization page could not be loaded. This usually means:\n\n` +
-                `1. The redirect URL is not registered in Etsy: ${redirectURL}\n` +
-                `2. Check your Etsy app settings at https://www.etsy.com/developers\n` +
-                `3. Make sure the redirect URL matches exactly (including trailing slash)`
-              ))
+              // Fallback: Try opening in a new tab as a last resort
+              logger.warn('Popup blocked or failed to load. Attempting fallback...')
+              try {
+                // Open in new tab - user will need to manually complete the flow
+                await chrome.tabs.create({ url: authUrl })
+                reject(new Error(
+                  `Authorization popup was blocked or failed to load.\n\n` +
+                  `A new tab has been opened with the authentication page.\n` +
+                  `Please complete the authentication in that tab.\n\n` +
+                  `After authentication, you'll be redirected back to the extension.\n\n` +
+                  `To prevent this in the future:\n` +
+                  `1. Allow popups for this extension\n` +
+                  `2. Check Chrome's popup blocker settings\n` +
+                  `3. Ensure the redirect URL is registered: ${redirectURL}`
+                ))
+              } catch (tabError) {
+                reject(new Error(
+                  `Authorization page could not be loaded.\n\n` +
+                  `Possible causes:\n` +
+                  `1. Network connectivity issue - check your internet connection\n` +
+                  `2. Popup blocker - make sure popups are allowed for this extension\n` +
+                  `3. Etsy OAuth service issue - try again in a few moments\n` +
+                  `4. Redirect URL mismatch - verify this URL is registered in Etsy: ${redirectURL}\n\n` +
+                  `Registered redirect URL should be: ${redirectURL}\n` +
+                  `Check your Etsy app settings at https://www.etsy.com/developers\n\n` +
+                  `You can also try manually opening this URL:\n${authUrl}`
+                ))
+              }
             } else {
               reject(new Error(errorMsg))
             }
@@ -152,11 +195,8 @@ export async function initOAuthFlow(): Promise<{ authUrl: string; state: string;
           logger.log('Full redirect URL for debugging:', JSON.stringify(redirectUrl))
           
           // Parse code and state from redirect URL
-          // The redirect URL from chrome.identity.launchWebAuthFlow will be:
-          // https://<extension-id>.chromiumapp.org/dashboard.html?code=...&state=...#/auth
-          // (or just the base URL with query params if we didn't include dashboard.html#/auth)
           const url = new URL(redirectUrl)
-          const urlSearchParams = url.searchParams  // Query params are in search, not hash
+          const urlSearchParams = url.searchParams
           logger.log('Parsed URL search params:', url.search)
           logger.log('URL search params entries:', Array.from(url.searchParams.entries()))
           
@@ -172,7 +212,6 @@ export async function initOAuthFlow(): Promise<{ authUrl: string; state: string;
           }
           
           if (!code) {
-            // Log more details for debugging
             logger.error('No code found in redirect URL. URL details:', {
               href: redirectUrl,
               search: url.search,
@@ -190,9 +229,12 @@ export async function initOAuthFlow(): Promise<{ authUrl: string; state: string;
           
           // Exchange code for token
           try {
+            logger.log('Exchanging code for token...')
             await exchangeCodeForToken(code, returnedState)
+            logger.log('Token exchange successful')
             resolve({ authUrl, state, codeVerifier }) // Token already stored
           } catch (error) {
+            logger.error('Token exchange failed:', error)
             reject(error)
           }
         }

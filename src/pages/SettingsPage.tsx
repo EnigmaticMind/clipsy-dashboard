@@ -14,6 +14,11 @@ import {
   checkGoogleSheetsOptOut,
 } from "../services/googleSheetsOAuth";
 import {
+  checkAuthStatus,
+  removeToken as removeEtsyToken,
+  initOAuthFlow,
+} from "../services/oauth";
+import {
   getCustomSheetName,
   setCustomSheetName as saveCustomSheetName,
 } from "../services/googleSheetsService";
@@ -45,6 +50,9 @@ export default function SettingsPage() {
   const [customSheetName, setCustomSheetName] = useState<string>("");
   const [savingSheetName, setSavingSheetName] = useState(false);
   const [analyticsOptedOut, setAnalyticsOptedOut] = useState(false);
+  const [etsyAuthenticated, setEtsyAuthenticated] = useState(false);
+  const [checkingEtsy, setCheckingEtsy] = useState(false);
+  const [connectingEtsy, setConnectingEtsy] = useState(false);
 
   const loadSettings = async () => {
     // Load auto-open setting
@@ -67,6 +75,9 @@ export default function SettingsPage() {
     // Check Google Sheets opt-out status
     const optedOut = await checkGoogleSheetsOptOut();
     setGoogleSheetsOptedOut(optedOut);
+
+    // Check Etsy authentication
+    checkEtsyConnection();
 
     // Load custom sheet name
     const sheetName = await getCustomSheetName();
@@ -172,6 +183,57 @@ export default function SettingsPage() {
     } catch (error) {
       logger.error("Error disconnecting Google Sheets:", error);
       toast.showError("Failed to disconnect Google Sheets. Please try again.");
+    }
+  };
+
+  const checkEtsyConnection = async () => {
+    setCheckingEtsy(true);
+    try {
+      const authStatus = await checkAuthStatus();
+      setEtsyAuthenticated(authStatus.authenticated);
+    } catch (error) {
+      logger.error("Error checking Etsy connection:", error);
+      setEtsyAuthenticated(false);
+    } finally {
+      setCheckingEtsy(false);
+    }
+  };
+
+  const handleConnectEtsy = async () => {
+    try {
+      setConnectingEtsy(true);
+      await initOAuthFlow();
+      toast.showSuccess("Please complete authentication in the popup window.");
+      // Check connection after a delay to allow OAuth to complete
+      setTimeout(() => {
+        checkEtsyConnection();
+        setConnectingEtsy(false);
+      }, 2000);
+    } catch (error) {
+      logger.error("Etsy connection error:", error);
+      setConnectingEtsy(false);
+      if (error instanceof Error) {
+        if (error.message.includes("popup")) {
+          toast.showError(
+            "Authentication popup was blocked. Please allow popups and try again."
+          );
+        } else {
+          toast.showError(`Connection failed: ${error.message}`);
+        }
+      } else {
+        toast.showError("Failed to connect to Etsy. Please try again.");
+      }
+    }
+  };
+
+  const handleDisconnectEtsy = async () => {
+    try {
+      await removeEtsyToken();
+      setEtsyAuthenticated(false);
+      toast.showSuccess("Etsy disconnected successfully. Please re-authenticate to continue using the extension.");
+    } catch (error) {
+      logger.error("Error disconnecting Etsy:", error);
+      toast.showError("Failed to disconnect Etsy. Please try again.");
     }
   };
 
@@ -315,6 +377,63 @@ export default function SettingsPage() {
               />
               <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
             </label>
+          </div>
+        </div>
+
+        {/* Etsy Authentication */}
+        <div className="border-b pb-6">
+          <h2 className="text-xl font-semibold text-gray-800 mb-4">
+            Etsy Authentication
+          </h2>
+          <p className="text-sm text-gray-500 mb-4">
+            Manage your Etsy shop connection. Disconnect and reconnect to refresh your token with updated permissions.
+          </p>
+
+          <div className="space-y-4">
+            {checkingEtsy ? (
+              <div className="text-sm text-gray-600">
+                Checking connection...
+              </div>
+            ) : etsyAuthenticated ? (
+              <div className="flex items-center justify-between p-4 bg-green-50 border border-green-200 rounded-lg">
+                <div>
+                  <div className="text-sm font-medium text-green-800">
+                    ✓ Etsy Connected
+                  </div>
+                  <p className="text-xs text-green-600 mt-1">
+                    Your shop is connected and ready to use
+                  </p>
+                </div>
+                <button
+                  onClick={handleDisconnectEtsy}
+                  className="px-4 py-2 text-sm font-medium text-red-600 bg-red-50 rounded-md hover:bg-red-100"
+                >
+                  Disconnect
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="p-4 bg-gray-50 border border-gray-200 rounded-lg">
+                  <p className="text-sm text-gray-600 mb-3">
+                    Connect your Etsy shop to:
+                  </p>
+                  <ul className="list-disc list-inside text-sm text-gray-600 space-y-1 mb-4">
+                    <li>Download and edit your listings</li>
+                    <li>Sync changes back to Etsy</li>
+                    <li>Manage variations and inventory</li>
+                  </ul>
+                  <button
+                    onClick={handleConnectEtsy}
+                    disabled={connectingEtsy}
+                    className="w-full px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                  >
+                    {connectingEtsy
+                      ? "Connecting..."
+                      : "Connect with Etsy"}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

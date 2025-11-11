@@ -322,15 +322,18 @@ function handleDeleteChange(
   existing: Listing | undefined,
   changeID: string
 ): PreviewChange | null {
-  if (!newListing.toDelete || newListing.listingID === 0 || !existing) {
+  if (!newListing.toDelete || newListing.listingID === 0) {
     return null
   }
+  
+  // If listing doesn't exist, still show deletion attempt (listing may have been already deleted)
+  const title = existing?.title || newListing.title || `Listing ${newListing.listingID}`
   
   return {
     changeId: changeID,
     changeType: 'delete',
     listingId: newListing.listingID,
-    title: existing.title,
+    title: title,
     fieldChanges: [],
     variationChanges: [],
   }
@@ -720,8 +723,9 @@ export async function previewUploadCSV(file: File): Promise<PreviewResponse> {
   await getValidAccessToken()
   const newListings = await parseUploadCSV(file)
 
+  // Include listings marked for deletion so we can fetch their details for the preview
   const listingIDsToFetch = newListings
-    .filter(l => l.listingID > 0 && !l.toDelete)
+    .filter(l => l.listingID > 0)
     .map(l => l.listingID)
 
   const existingListingsMap = await fetchExistingListings(listingIDsToFetch)

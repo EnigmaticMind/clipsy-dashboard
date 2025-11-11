@@ -4,9 +4,9 @@ import { getValidAccessToken } from '../googleSheetsOAuth'
 import { Listing } from '../etsyApi'
 import { logger } from '../../utils/logger'
 import { GOOGLE_SHEETS_API_BASE } from './types'
-import { isEmpty, decodeHTMLEntities } from '../../utils/dataParsing'
+import { isEmpty, decodeHTMLEntities, parseId } from '../../utils/dataParsing'
 import { verifySheetExists, getOrCreateSheet } from './sheetManagement'
-import { readSheetData, batchUpdateSheet } from './sheetUtils'
+import { readSheetData, batchUpdateSheet, deleteSheetRows } from './sheetUtils'
 import { COLUMNS, getHeaderValue, LISTING_COLUMN_COUNT } from './constants'
 
 // Helper function to build a row from Etsy listing data (for listing row)
@@ -412,6 +412,122 @@ export async function updateSheetIDs(
     }
   } catch (error) {
     logger.error('Error updating sheet data:', error)
+    // Don't throw - this is a non-critical operation
+  }
+}
+
+// Remove deleted listings and variations from Google Sheet
+// deletedListingIds: Set of listing IDs that were deleted
+// deletedProductIds: Set of product IDs (variations) that were deleted
+export async function removeDeletedItemsFromSheet(
+  shopId: number,
+  deletedListingIds: Set<number>,
+  deletedProductIds: Set<number>
+): Promise<void> {
+  if (deletedListingIds.size === 0 && deletedProductIds.size === 0) {
+    return // Nothing to delete
+  }
+
+  try {
+    // Get sheet metadata from storage
+    const storageKey = `clipsy:sheet:shop_${shopId}`
+    const result = await chrome.storage.local.get(storageKey)
+    const existing = result[storageKey]
+    
+    if (!existing || !existing.sheetId) {
+      logger.warn('No sheet found for shop, skipping deletion of rows')
+      return
+    }
+
+    const sheetId = existing.sheetId
+
+    // Verify sheet still exists
+    const exists = await verifySheetExists(sheetId)
+    if (!exists) {
+      logger.warn('Sheet no longer exists, skipping deletion of rows')
+      return
+    }
+
+    // Get all sheets in the spreadsheet
+    const token = await getValidAccessToken()
+    const spreadsheetResponse = await fetch(
+      `${GOOGLE_SHEETS_API_BASE}/spreadsheets/${sheetId}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      }
+    )
+    
+    if (!spreadsheetResponse.ok) {
+      logger.warn('Failed to get spreadsheet info for row deletion')
+      return
+    }
+    
+    const spreadsheet = await spreadsheetResponse.json()
+    const sheets = spreadsheet.sheets || []
+
+    // Process each sheet
+    for (const sheet of sheets) {
+      const sheetName = sheet.properties.title
+      
+      try {
+        // Read all rows from the sheet
+        const rows = await readSheetData(sheetId, sheetName)
+        
+        if (rows.length === 0) {
+          continue
+        }
+
+        // Find header row
+        let headerRowIndex = -1
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i] || []
+          if (row[COLUMNS.listing_id] === getHeaderValue('listing_id')) {
+            headerRowIndex = i
+            break
+          }
+        }
+
+        if (headerRowIndex < 0) {
+          logger.warn(`No header row found in sheet "${sheetName}", skipping`)
+          continue
+        }
+
+        // Find rows to delete
+        const rowsToDelete: number[] = []
+        
+        for (let i = headerRowIndex + 1; i < rows.length; i++) {
+          const row = rows[i] || []
+          const rowListingId = parseId(row[COLUMNS.listing_id]?.trim())
+          const rowProductId = parseId(row[COLUMNS.product_id]?.trim())
+          const rowIndex = i + 1 // Convert to 1-based
+
+          // Delete if:
+          // 1. Row has a listing ID that was deleted (this will delete listing row + all its variations)
+          // 2. Row has a product ID that was deleted (this will delete just that variation)
+          const shouldDelete = 
+            (rowListingId !== null && deletedListingIds.has(rowListingId)) ||
+            (rowProductId !== null && deletedProductIds.has(rowProductId))
+
+          if (shouldDelete) {
+            rowsToDelete.push(rowIndex)
+          }
+        }
+
+        // Delete rows if any found
+        if (rowsToDelete.length > 0) {
+          logger.log(`Deleting ${rowsToDelete.length} row(s) from sheet "${sheetName}"`)
+          await deleteSheetRows(sheetId, sheetName, rowsToDelete)
+          logger.log(`Successfully deleted ${rowsToDelete.length} row(s) from sheet "${sheetName}"`)
+        }
+      } catch (error) {
+        logger.error(`Error processing sheet "${sheetName}" for deletion:`, error)
+        // Continue with other sheets even if one fails
+      }
+    }
+  } catch (error) {
+    logger.error('Error removing deleted items from sheet:', error)
     // Don't throw - this is a non-critical operation
   }
 }

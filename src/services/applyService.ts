@@ -11,7 +11,7 @@ import {
   loadUploadProgress, 
   clearUploadProgress
 } from './progressService'
-import { updateSheetIDs } from './googleSheetsService'
+import { updateSheetIDs, removeDeletedItemsFromSheet } from './googleSheetsService'
 import { logger } from '../utils/logger'
 
 // Apply changes from CSV file with progress persistence and batch fetching
@@ -36,6 +36,8 @@ export async function applyUploadCSV(
   let filteredListings: ProcessedListing[] = []
   let processedListingIDs: number[] = []
   let failedListingIDs: { listingID: number; error: string }[] = []
+  const deletedListingIds = new Set<number>()
+  const deletedProductIds = new Set<number>()
 
   if (existingProgress) {
     // Resume from previous progress
@@ -180,6 +182,18 @@ export async function applyUploadCSV(
   // Clear progress on successful completion
   await clearUploadProgress(fileHash)
 
+  // Remove deleted items from Google Sheet
+  if (deletedListingIds.size > 0 || deletedProductIds.size > 0) {
+    try {
+      logger.log(`Removing ${deletedListingIds.size} deleted listing(s) and ${deletedProductIds.size} deleted variation(s) from Google Sheet`)
+      await removeDeletedItemsFromSheet(shopID, deletedListingIds, deletedProductIds)
+      logger.log('Successfully removed deleted items from Google Sheet')
+    } catch (error) {
+      logger.error('Error removing deleted items from Google Sheet:', error)
+      // Don't fail the operation - this is non-critical
+    }
+  }
+
   // Helper function to process a single listing
   async function processListing(listing: ProcessedListing, existingListing: Listing | undefined): Promise<void> {
     // defaultTaxonomyID is captured from closure
@@ -190,8 +204,20 @@ export async function applyUploadCSV(
           logger.warn('Cannot delete listing without Listing ID')
           return
         }
-        await deleteListing(shopID, listing.listingID)
-        logger.log(`Deleted listing ${listing.listingID}`)
+        try {
+          await deleteListing(shopID, listing.listingID)
+          logger.log(`Deleted listing ${listing.listingID}`)
+          deletedListingIds.add(listing.listingID)
+        } catch (error: any) {
+          // If listing is already deleted (404), treat as success
+          const errorMessage = error?.message || String(error || '')
+          if (errorMessage.includes('not found') || errorMessage.includes('404') || errorMessage.includes('Resource not found')) {
+            logger.log(`Listing ${listing.listingID} was already deleted`)
+            deletedListingIds.add(listing.listingID)
+          } else {
+            throw error // Re-throw other errors
+          }
+        }
         processedListingIDs.push(listing.listingID)
         return
       }
@@ -265,6 +291,15 @@ export async function applyUploadCSV(
         if (errorMsg.includes('required') || errorMsg.includes('invalid') || errorMsg.includes('must')) {
           failedListingIDs.push({ listingID: listing.listingID, error: `Listing update failed: ${errorMsg}` })
           return
+        }
+      }
+
+      // Track deleted product IDs before updating inventory
+      if (listing.variations) {
+        for (const variation of listing.variations) {
+          if (variation.toDelete && variation.productID > 0) {
+            deletedProductIds.add(variation.productID)
+          }
         }
       }
 

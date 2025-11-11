@@ -146,10 +146,13 @@ function determineRowType(
 ): RowType {
   // Check if this is a new listing row (has listing info but no variation data)
   const hasListingInfo = row.title !== '' || row.description !== '' || row.status !== ''
+  const hasListingID = safeParseInt(row.listingID, 0) > 0
+  const hasDeleteInSKU = row.sku.toUpperCase() === 'DELETE'
   const hasVariationData = row.propertyOption1 !== '' || row.propertyOption2 !== ''
   
   // If it has listing info but no variation data, it's a listing row
-  if (hasListingInfo && !hasVariationData) {
+  // Also check if it has a listing ID and DELETE in SKU (for deletion-only rows)
+  if ((hasListingInfo || (hasListingID && hasDeleteInSKU)) && !hasVariationData) {
     return {
       isNewListing: true,
       isVariation: false,

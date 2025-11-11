@@ -24,24 +24,9 @@ export async function updateListingInventory(
 
   if (!listing.hasVariations) {
     // No variations - single product
-    // If converting from variations, we need to include all existing products marked as deleted
-    if (existingListing?.has_variations && existingListing.inventory.products.length > 0) {
-      // Include all existing products marked for deletion
-      for (const existingProduct of existingListing.inventory.products) {
-        if (!existingProduct.is_deleted) {
-          inventoryBody.products.push({
-            product_id: existingProduct.product_id,
-            is_deleted: true,
-            sku: existingProduct.sku,
-            property_values: existingProduct.property_values,
-            offerings: existingProduct.offerings.map((o: any) => ({
-              ...o,
-              is_deleted: true
-            })),
-          })
-        }
-      }
-    }
+    // When converting from variations to no variations, we simply don't include
+    // the old variation products in the array - Etsy's API doesn't support is_deleted
+    // The new single product will replace all variations
     
     const existingPrice = getExistingOfferingPrice(existingListing)
     const validPrice = getValidPrice(listing.price, existingPrice)
@@ -106,6 +91,9 @@ export async function updateListingInventory(
     // Create a map of CSV variations by their property_values signature for matching
     const csvVariationsBySignature = new Map<string, typeof listing.variations[0]>()
     const csvProductIDsToDelete = new Set<number>()
+    
+    // Track if we converted to single product (when all variations are deleted)
+    let convertedToSingleProduct = false
 
     // Determine canonical property order from existing listing (if available)
     // Etsy requires all products to have properties in the same order
@@ -320,81 +308,13 @@ export async function updateListingInventory(
       return null
     }
 
-    // Helper function to fetch all property values for a property ID from the shop
-    async function fetchAllPropertyValuesFromShop(
-      propertyID: number,
-      propertyName: string
-    ): Promise<Map<number, { valueID: number; value: string }>> {
-      const valueMap = new Map<number, { valueID: number; value: string }>()
-      
-      if (!shopID || propertyID === 0) {
-        return valueMap
-      }
-      
-      try {
-        logger.log(`Fetching all property values for ${propertyName} (ID: ${propertyID}) from shop ${shopID}...`)
-        
-        // Fetch listings from multiple states to get all property values
-        let allListings: any[] = []
-        
-        for (const state of ['active', 'draft', 'inactive']) {
-          try {
-            const searchResponse = await makeEtsyRequest(
-              'GET',
-              `/application/shops/${shopID}/listings?limit=100&includes=Inventory&state=${state}`
-            )
-            const stateData = await searchResponse.json()
-            if (stateData.results && Array.isArray(stateData.results)) {
-              allListings.push(...stateData.results)
-            }
-          } catch (error) {
-            logger.warn(`Error fetching listings with state ${state}:`, error)
-          }
-        }
-        
-        // Extract all unique property values for this property ID
-        for (const listing of allListings) {
-          if (!listing.has_variations || !listing.inventory?.products) continue
-          
-          for (const product of listing.inventory.products) {
-            if (product.is_deleted || !product.property_values) continue
-            
-            for (const pv of product.property_values) {
-              if (pv.property_id === propertyID && pv.value_ids && pv.values) {
-                for (let i = 0; i < Math.min(pv.value_ids.length, pv.values.length); i++) {
-                  const valueID = pv.value_ids[i]
-                  const value = pv.values[i]
-                  if (!valueMap.has(valueID)) {
-                    valueMap.set(valueID, { valueID, value })
-                  }
-                }
-              }
-            }
-          }
-        }
-        
-        logger.log(`Found ${valueMap.size} unique property values for ${propertyName} (ID: ${propertyID})`)
-        return valueMap
-      } catch (error) {
-        logger.warn(`Error fetching property values from shop:`, error)
-        return valueMap
-      }
-    }
-
     // First pass: collect all variations from CSV and track property-level fields
     for (const variation of listing.variations) {
       if (variation.toDelete) {
-        // For deleted variations, include them with is_deleted flag
+        // Track products to delete - they will be handled in the second pass
         if (variation.productID > 0) {
           // Existing variation to delete
           csvProductIDsToDelete.add(variation.productID)
-          products.push({
-            product_id: variation.productID,
-            is_deleted: true,
-            sku: '',
-            property_values: [],
-            offerings: [],
-          })
         }
         // If ProductID is 0, it's a new variation marked for deletion, skip it
         continue
@@ -775,202 +695,20 @@ export async function updateListingInventory(
       csvVariationsBySignature.set(signature, variation)
     }
     
-    // After processing all CSV variations, if we have property IDs, fetch ALL their values from the shop
-    // and generate all missing combinations
-    if (canonicalPropertyOrder.length > 0 && shopID) {
-      const allPropertyValuesMap = new Map<number, Map<number, { valueID: number; value: string }>>()
-      
-      // Fetch all property values for each property in canonical order
-      for (const propID of canonicalPropertyOrder) {
-        // Find property name from existing listing or CSV
-        let propertyName = ''
-        if (existingListing && existingListing.inventory.products.length > 0) {
-          const firstProduct = existingListing.inventory.products.find((p: any) => !p.is_deleted)
-          if (firstProduct && firstProduct.property_values) {
-            const prop = firstProduct.property_values.find((pv: any) => pv.property_id === propID)
-            if (prop) propertyName = prop.property_name || ''
-          }
-        }
-        
-        // Also check CSV variations for property name
-        if (!propertyName) {
-          for (const variation of listing.variations) {
-            if (variation.toDelete) continue
-            if (variation.propertyID1 === propID && variation.propertyName1) {
-              propertyName = variation.propertyName1
-              break
-            }
-            if (variation.propertyID2 === propID && variation.propertyName2) {
-              propertyName = variation.propertyName2
-              break
-            }
-          }
-        }
-        
-        if (propertyName) {
-          const values = await fetchAllPropertyValuesFromShop(propID, propertyName)
-          if (values.size > 0) {
-            allPropertyValuesMap.set(propID, values)
-            logger.log(`Fetched ${values.size} values for property ${propertyName} (ID: ${propID})`)
-          }
-        }
-      }
-      
-      // Generate all combinations of property values
-      if (allPropertyValuesMap.size > 0) {
-        const allCombinations: Array<Array<{ property_id: number; value_id: number; value: string }>> = []
-        
-        function generateAllCombinations(
-          current: Array<{ property_id: number; value_id: number; value: string }>,
-          propIndex: number
-        ) {
-          if (propIndex >= canonicalPropertyOrder.length) {
-            if (current.length > 0) {
-              allCombinations.push([...current])
-            }
-            return
-          }
-          
-          const propID = canonicalPropertyOrder[propIndex]
-          const values = allPropertyValuesMap.get(propID)
-          
-          if (values && values.size > 0) {
-            for (const { valueID, value } of values.values()) {
-              generateAllCombinations([...current, { property_id: propID, value_id: valueID, value }], propIndex + 1)
-            }
-          } else {
-            // Property has no values - skip it
-            generateAllCombinations(current, propIndex + 1)
-          }
-        }
-        
-        generateAllCombinations([], 0)
-        logger.log(`Generated ${allCombinations.length} total combinations from shop property values`)
-        
-        // Create signatures for CSV variations to check which combinations are already in CSV
-        const csvVariationSignatures = new Set<string>()
-        for (const variation of listing.variations) {
-          if (variation.toDelete) continue
-          
-          const sig: number[] = []
-          if (variation.propertyID1 > 0 && variation.propertyOptionIDs1.length > 0) {
-            sig.push(...variation.propertyOptionIDs1)
-          }
-          if (variation.propertyID2 > 0 && variation.propertyOptionIDs2.length > 0) {
-            sig.push(...variation.propertyOptionIDs2)
-          }
-          if (sig.length > 0) {
-            csvVariationSignatures.add(JSON.stringify(sig.sort()))
-          }
-        }
-        
-        // Create products for combinations not in CSV (mark as hidden)
-        for (const combo of allCombinations) {
-          // Create signature for this combination
-          const comboValueIDs = combo.map(c => c.value_id).sort()
-          const comboSignature = JSON.stringify(comboValueIDs)
-          
-          // Check if this combination is already in CSV
-          if (csvVariationSignatures.has(comboSignature)) {
-            continue // Already handled by CSV processing
-          }
-          
-          // Check if this combination already exists in the listing
-          const existingSignature = JSON.stringify(
-            combo.map(c => ({ property_id: c.property_id, value_ids: [c.value_id] }))
-              .sort((a, b) => a.property_id - b.property_id)
-          )
-          if (csvVariationsBySignature.has(existingSignature)) {
-            continue // Already exists
-          }
-          
-          // This is a missing combination - create it as hidden
-          logger.log(`Creating hidden combination: ${combo.map(c => c.value).join(' / ')} (not in CSV/Sheet)`)
-          
-          // Build property values in canonical order
-          const propertyValues = canonicalPropertyOrder
-            .map(propID => {
-              const comboProp = combo.find(c => c.property_id === propID)
-              if (!comboProp) return null
-              
-              // Find property name
-              let propertyName = ''
-              if (existingListing && existingListing.inventory.products.length > 0) {
-                const firstProduct = existingListing.inventory.products.find((p: any) => !p.is_deleted)
-                if (firstProduct && firstProduct.property_values) {
-                  const prop = firstProduct.property_values.find((pv: any) => pv.property_id === propID)
-                  if (prop) propertyName = prop.property_name || ''
-                }
-              }
-              
-              return {
-                property_id: propID,
-                property_name: propertyName,
-                value_ids: [comboProp.value_id],
-                values: [comboProp.value]
-              }
-            })
-            .filter((pv): pv is NonNullable<typeof pv> => pv !== null)
-          
-          if (propertyValues.length !== canonicalPropertyOrder.length) {
-            logger.warn(`Skipping combination - failed to build property values correctly`)
-            continue
-          }
-          
-          // Get readiness_state_id
-          let readinessStateID = defaultReadinessStateID
-          if (existingListing && existingListing.inventory.products.length > 0) {
-            const firstProduct = existingListing.inventory.products.find((p: any) => !p.is_deleted)
-            if (firstProduct && firstProduct.offerings && firstProduct.offerings.length > 0) {
-              const firstOffering = firstProduct.offerings.find((o: any) => !o.is_deleted)
-              if (firstOffering && firstOffering.readiness_state_id) {
-                readinessStateID = firstOffering.readiness_state_id
-              }
-            }
-          }
-          
-          // Get default price from first existing product
-          let defaultPrice = 0
-          if (existingListing && existingListing.inventory.products.length > 0) {
-            const firstProduct = existingListing.inventory.products.find((p: any) => !p.is_deleted)
-            if (firstProduct && firstProduct.offerings.length > 0) {
-              const firstOffering = firstProduct.offerings.find((o: any) => !o.is_deleted)
-              if (firstOffering && firstOffering.price) {
-                if (typeof firstOffering.price === 'object' && firstOffering.price.amount !== undefined) {
-                  defaultPrice = firstOffering.price.amount / (firstOffering.price.divisor || 1)
-                } else if (typeof firstOffering.price === 'number') {
-                  defaultPrice = firstOffering.price
-                }
-              }
-            }
-          }
-          
-          const product: any = {
-            sku: '',
-            property_values: propertyValues,
-            offerings: [{
-              price: defaultPrice,
-              quantity: 0, // Hidden variation
-              is_enabled: false, // Mark as hidden since not in CSV/Sheet
-              readiness_state_id: readinessStateID
-            }]
-          }
-          
-          products.push(product)
-        }
-      }
-    }
+    // Note: We no longer generate hidden combinations automatically.
+    // Only variations explicitly defined in the CSV/Sheet will be created.
 
     // Second pass: Include existing products that aren't in the CSV (they remain unchanged)
     // This ensures we send the COMPLETE product array as required by Etsy API
     if (existingListing !== null && existingListing.inventory.products) {
       for (const existingProduct of existingListing.inventory.products) {
-        // Skip products already marked for deletion
+        // Skip products already marked for deletion in Etsy
         if (existingProduct.is_deleted) {
           continue
         }
 
         // Skip if this product is marked for deletion in CSV
+        // Etsy's API doesn't support is_deleted - we simply exclude deleted products from the array
         if (existingProduct.product_id && csvProductIDsToDelete.has(existingProduct.product_id)) {
           continue
         }
@@ -1111,7 +849,72 @@ export async function updateListingInventory(
 
     // Ensure we have at least one product (required by API)
     if (products.length === 0) {
-      throw new Error('Cannot update inventory: at least one product is required. All variations may have been skipped due to missing property IDs or invalid data.')
+      // Check if all variations are being deleted - if so, convert to single product listing
+      const allVariationsDeleted = listing.variations.length > 0 && 
+        listing.variations.every(v => v.toDelete)
+      
+      if (allVariationsDeleted && existingListing) {
+        // Convert from variations to single product
+        logger.log('All variations are being deleted - converting listing to single product (no variations)')
+        convertedToSingleProduct = true
+        
+        // Get price from existing listing (use first active product's price)
+        const existingPrice = getExistingOfferingPrice(existingListing)
+        const validPrice = getValidPrice(listing.price, existingPrice)
+        
+        // Get quantity from existing listing or use 1 as default
+        let quantity = listing.quantity
+        if (quantity === null && existingListing.inventory.products.length > 0) {
+          const firstProduct = existingListing.inventory.products.find((p: any) => !p.is_deleted)
+          if (firstProduct && firstProduct.offerings.length > 0) {
+            const firstOffering = firstProduct.offerings.find((o: any) => !o.is_deleted)
+            if (firstOffering) {
+              quantity = firstOffering.quantity
+            }
+          }
+        }
+        if (quantity === null) {
+          quantity = 1 // Default to 1 if not specified
+        }
+        
+        const offering: any = {
+          price: validPrice,
+          quantity: quantity,
+          is_enabled: true,
+        }
+        
+        // Get readiness_state_id from existing listing
+        if (existingListing.inventory.products.length > 0) {
+          const firstProduct = existingListing.inventory.products.find((p: any) => !p.is_deleted)
+          if (firstProduct && firstProduct.offerings.length > 0) {
+            const firstOffering = firstProduct.offerings.find((o: any) => !o.is_deleted)
+            if (firstOffering && firstOffering.readiness_state_id) {
+              offering.readiness_state_id = firstOffering.readiness_state_id
+            } else if (defaultReadinessStateID) {
+              offering.readiness_state_id = defaultReadinessStateID
+            }
+          } else if (defaultReadinessStateID) {
+            offering.readiness_state_id = defaultReadinessStateID
+          }
+        } else if (defaultReadinessStateID) {
+          offering.readiness_state_id = defaultReadinessStateID
+        }
+        
+        const product: any = {
+          sku: listing.sku || '',
+          property_values: [],
+          offerings: [offering],
+        }
+        
+        products.push(product)
+        
+        // Clear property arrays since we're converting to no variations
+        inventoryBody.price_on_property = []
+        inventoryBody.quantity_on_property = []
+        inventoryBody.sku_on_property = []
+      } else {
+        throw new Error('Cannot update inventory: at least one product is required. All variations may have been skipped due to missing property IDs or invalid data.')
+      }
     }
     
     // Validate that all products have the same property structure (required by Etsy API)
@@ -1158,38 +961,48 @@ export async function updateListingInventory(
     }
 
     // Build property arrays - include properties from both CSV and existing listing
-    // Start with existing listing's property arrays (if available) to preserve configuration
-    const pricePropertyIDs = existingListing?.inventory?.price_on_property 
-      ? [...existingListing.inventory.price_on_property] 
-      : []
-    const quantityPropertyIDs = existingListing?.inventory?.quantity_on_property 
-      ? [...existingListing.inventory.quantity_on_property] 
-      : []
-    const skuPropertyIDs = existingListing?.inventory?.sku_on_property 
-      ? [...existingListing.inventory.sku_on_property] 
-      : []
+    // Skip if we converted to single product (no variations)
+    let quantityPropertyIDs: number[] = []
+    if (!convertedToSingleProduct) {
+      // Start with existing listing's property arrays (if available) to preserve configuration
+      const pricePropertyIDs = existingListing?.inventory?.price_on_property 
+        ? [...existingListing.inventory.price_on_property] 
+        : []
+      quantityPropertyIDs = existingListing?.inventory?.quantity_on_property 
+        ? [...existingListing.inventory.quantity_on_property] 
+        : []
+      const skuPropertyIDs = existingListing?.inventory?.sku_on_property 
+        ? [...existingListing.inventory.sku_on_property] 
+        : []
 
-    // Add properties from CSV that have price/quantity/SKU
-    for (const pid of propertyIDSet) {
-      if (propertyPriceMap.get(pid) && !pricePropertyIDs.includes(pid)) {
-        pricePropertyIDs.push(pid)
+      // Add properties from CSV that have price/quantity/SKU
+      for (const pid of propertyIDSet) {
+        if (propertyPriceMap.get(pid) && !pricePropertyIDs.includes(pid)) {
+          pricePropertyIDs.push(pid)
+        }
+        if (propertyQuantityMap.get(pid) && !quantityPropertyIDs.includes(pid)) {
+          quantityPropertyIDs.push(pid)
+        }
+        if (propertySKUMap.get(pid) && !skuPropertyIDs.includes(pid)) {
+          skuPropertyIDs.push(pid)
+        }
       }
-      if (propertyQuantityMap.get(pid) && !quantityPropertyIDs.includes(pid)) {
-        quantityPropertyIDs.push(pid)
-      }
-      if (propertySKUMap.get(pid) && !skuPropertyIDs.includes(pid)) {
-        skuPropertyIDs.push(pid)
-      }
+
+      // Sort arrays for consistency
+      pricePropertyIDs.sort((a, b) => a - b)
+      quantityPropertyIDs.sort((a, b) => a - b)
+      skuPropertyIDs.sort((a, b) => a - b)
+      
+      // Set property arrays (even if empty, as they may be required)
+      inventoryBody.price_on_property = pricePropertyIDs
+      inventoryBody.quantity_on_property = quantityPropertyIDs
+      inventoryBody.sku_on_property = skuPropertyIDs
     }
-
-    // Sort arrays for consistency
-    pricePropertyIDs.sort((a, b) => a - b)
-    quantityPropertyIDs.sort((a, b) => a - b)
-    skuPropertyIDs.sort((a, b) => a - b)
 
     // CRITICAL: If quantity is NOT on property, all products must have the same quantity
     // Etsy API requires: "quantity must be consistent across all products"
-    if (quantityPropertyIDs.length === 0 && products.length > 0) {
+    // Skip this check if we converted to single product (only one product exists)
+    if (!convertedToSingleProduct && quantityPropertyIDs.length === 0 && products.length > 0) {
       // Find the first non-zero quantity, or use 1 as default
       let consistentQuantity = 1
       for (const product of products) {
@@ -1211,11 +1024,6 @@ export async function updateListingInventory(
       
       logger.log(`Quantity is not on property - setting all products to consistent quantity: ${consistentQuantity}`)
     }
-
-    // Set property arrays (even if empty, as they may be required)
-    inventoryBody.price_on_property = pricePropertyIDs
-    inventoryBody.quantity_on_property = quantityPropertyIDs
-    inventoryBody.sku_on_property = skuPropertyIDs
 
     inventoryBody.products = products
   }
