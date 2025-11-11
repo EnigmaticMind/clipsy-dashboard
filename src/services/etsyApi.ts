@@ -176,6 +176,9 @@ export async function getListingCount(
   return overrideRowCount(actualCount)
 }
 
+// All possible listing states
+export const ALL_LISTING_STATES: ListingStatus[] = ['active', 'inactive', 'draft', 'sold_out', 'expired']
+
 // Listing types
 export type ListingStatus = 'active' | 'inactive' | 'draft' | 'sold_out' | 'expired'
 
@@ -256,6 +259,8 @@ export async function fetchListings(
 ): Promise<ListingsResponse> {
   const limit = 100
   const batchSize = 5 // Fetch 5 pages in parallel to respect rate limits
+  const batchDelay = 200 // 200ms delay between batches to respect rate limits
+  const maxRetries = 2 // Retry failed pages up to 2 times
   
   // First request to get total count
   const firstParams = new URLSearchParams({
@@ -277,54 +282,116 @@ export async function fetchListings(
   const totalCount = firstPage.count
   const allResults: Listing[] = [...firstPage.results]
   
+  // Deduplicate by listing_id (in case of duplicates)
+  const seenIds = new Set<number>(allResults.map(l => l.listing_id))
+  
   if (onProgress) {
     onProgress(allResults.length, totalCount)
+  }
+  
+  // Early exit if we already have all results
+  if (allResults.length >= totalCount) {
+    return {
+      count: totalCount,
+      results: allResults,
+    }
   }
   
   // Calculate number of remaining pages
   const pagesNeeded = Math.ceil(totalCount / limit)
   
+  // Track failed pages for retry
+  const failedPages: number[] = []
+  
+  // Helper function to fetch a single page with retry
+  const fetchPage = async (page: number, retries = maxRetries): Promise<ListingsResponse | null> => {
+    const offset = page * limit
+    const params = new URLSearchParams({
+      includes: 'Inventory',
+      limit: limit.toString(),
+      offset: offset.toString(),
+    })
+    
+    if (status) {
+      params.set('state', status)
+    }
+    
+    try {
+      const response = await makeEtsyRequest(
+        'GET',
+        `/application/shops/${shopID}/listings?${params.toString()}`
+      )
+      return await response.json()
+    } catch (error) {
+      if (retries > 0) {
+        logger.warn(`Failed to fetch page ${page}, retrying... (${retries} retries left)`)
+        await new Promise(resolve => setTimeout(resolve, 1000)) // Wait 1s before retry
+        return fetchPage(page, retries - 1)
+      }
+      logger.error(`Error fetching page ${page} after ${maxRetries} retries:`, error)
+      return null
+    }
+  }
+  
   // Fetch remaining pages in parallel batches
   for (let batchStart = 1; batchStart < pagesNeeded; batchStart += batchSize) {
     const batchEnd = Math.min(batchStart + batchSize, pagesNeeded)
-    const batchPromises: Promise<ListingsResponse>[] = []
+    const batchPromises: Promise<{ page: number; result: ListingsResponse | null }>[] = []
     
     for (let page = batchStart; page < batchEnd; page++) {
-      const offset = page * limit
-      const params = new URLSearchParams({
-        includes: 'Inventory',
-        limit: limit.toString(),
-        offset: offset.toString(),
-      })
-      
-      if (status) {
-        params.set('state', status)
-      }
-      
       batchPromises.push(
-        makeEtsyRequest(
-          'GET',
-          `/application/shops/${shopID}/listings?${params.toString()}`
-        ).then(r => r.json())
+        fetchPage(page).then(result => ({ page, result }))
       )
     }
     
     // Wait for batch to complete
     const batchResults = await Promise.allSettled(batchPromises)
     
-    for (const result of batchResults) {
-      if (result.status === 'fulfilled') {
-        allResults.push(...result.value.results)
+    for (const settled of batchResults) {
+      if (settled.status === 'fulfilled') {
+        const { page, result } = settled.value
+        if (result) {
+          // Add results, filtering out duplicates
+          for (const listing of result.results) {
+            if (!seenIds.has(listing.listing_id)) {
+              allResults.push(listing)
+              seenIds.add(listing.listing_id)
+            }
+          }
+        } else {
+          failedPages.push(page)
+        }
       } else {
-        console.error('Error fetching batch:', result.reason)
-        // Continue with other batches even if one fails
+        logger.error('Error in batch promise:', settled.reason)
+        // Extract page number if possible
+        if (settled.value?.page) {
+          failedPages.push(settled.value.page)
+        }
       }
     }
     
+    // Update progress
     if (onProgress) {
       onProgress(allResults.length, totalCount)
     }
+    
+    // Early exit if we've fetched all results
+    if (allResults.length >= totalCount) {
+      break
+    }
+    
+    // Add delay between batches to respect rate limits (except for last batch)
+    if (batchStart + batchSize < pagesNeeded) {
+      await new Promise(resolve => setTimeout(resolve, batchDelay))
+    }
   }
+  
+  // Log summary
+  if (failedPages.length > 0) {
+    logger.warn(`Failed to fetch ${failedPages.length} page(s): ${failedPages.join(', ')}`)
+  }
+  
+  logger.log(`Fetched ${allResults.length} of ${totalCount} listings`)
   
   return {
     count: totalCount,

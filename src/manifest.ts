@@ -12,17 +12,6 @@ import { defineManifest } from '@crxjs/vite-plugin'
 const EXTENSION_PUBLIC_KEY = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmy1SLcuqctxsNjo+onVKxm+06xKksOjRpLfkyZZ5w2zKJgVb5IfUHO5ffS/Szvr8MekF28dZTk0hecx7gTCFTLCYTI+lwMUU9gPlLAcCV6+/Uf5LhFlZf51WXbOkjYtQiak0kXximh7BKDwo5Q5siFVkYvU8EzwURZ4Bo4a9SVE5zWfXFzJ1x1GzQWch8sd9Chep74heveyvd2QZbqT0v/LzsL1ksGnfMeQa6f3WoWZMYQbDaJ+xNocF/xvNl2s1GbK+G/BHU2WwMui7oo4x/Gel+Q8lv6l84IrkhYnuFg2YnIWVYPnhcFvMHTNNm29saZnYkCSQ/7GE8HuZaA/EFQIDAQAB'
 import packageData from '../package.json';
 
-// Check if we're in development mode
-interface ImportMetaEnv {
-  MODE?: string;
-}
-
-interface ImportMeta {
-  env?: ImportMetaEnv;
-}
-
-const isDev = (import.meta as ImportMeta).env?.MODE === 'development';
-
 // Build manifest with optional key field
 interface PackageData {
   name: string;
@@ -39,8 +28,8 @@ const manifestConfig: {
   manifest_version: number;
   key?: string;
 } = {
-  name: `${packageDataTyped.displayName || packageDataTyped.name}${isDev ? ` ➡️ Dev` : ''}`,
-  description: packageDataTyped.description || 'Bulk edit and manage your Etsy listings with CSV import/export',
+  name: `Clipsy - Etsy Listing Manager (Early Demo)`,
+  description: `Early demo: Bulk edit Etsy listings with CSV. Download, edit in Excel/Sheets, upload with preview. Seeking feedback & suggestions!`,
   version: packageDataTyped.version,
   manifest_version: 3,
 }

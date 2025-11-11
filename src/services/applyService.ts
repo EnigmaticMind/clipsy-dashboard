@@ -11,6 +11,7 @@ import {
   loadUploadProgress, 
   clearUploadProgress
 } from './progressService'
+import { updateSheetIDs } from './googleSheetsService'
 import { logger } from '../utils/logger'
 
 // Apply changes from CSV file with progress persistence and batch fetching
@@ -226,6 +227,16 @@ export async function applyUploadCSV(
               failedListingIDs.push({ listingID: newListingID, error: `Inventory update failed: ${errorMsg}` })
               return
             }
+
+            // Fetch the listing to get all IDs (listing ID, product IDs, property IDs)
+            try {
+              const createdListing = await getListing(newListingID)
+              // Update Google Sheet with all IDs
+              await updateSheetIDs(shopID, newListingID, createdListing)
+            } catch (error) {
+              logger.warn(`Failed to update Google Sheet IDs for listing ${newListingID}:`, error)
+              // Don't fail the operation - this is non-critical
+            }
         processedListingIDs.push(0) // Track creates with 0
         return
       }
@@ -265,6 +276,16 @@ export async function applyUploadCSV(
         logger.error(`Error updating inventory for listing ${listing.listingID}:`, error)
         failedListingIDs.push({ listingID: listing.listingID, error: `Inventory update failed: ${errorMsg}` })
         return
+      }
+
+      // Fetch the updated listing to get all IDs (especially new product IDs from variations)
+      try {
+        const updatedListing = await getListing(listing.listingID)
+        // Update Google Sheet with all IDs
+        await updateSheetIDs(shopID, listing.listingID, updatedListing)
+      } catch (error) {
+        logger.warn(`Failed to update Google Sheet IDs for listing ${listing.listingID}:`, error)
+        // Don't fail the operation - this is non-critical
       }
 
       logger.log(`Updated listing ${listing.listingID}`)

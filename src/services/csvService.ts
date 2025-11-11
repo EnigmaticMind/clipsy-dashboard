@@ -104,15 +104,15 @@ export function convertListingsToCSV(listings: ListingsResponse): string {
     'Variation Price',  // If price varies by variation
     'Variation Quantity',  // If quantity varies by variation
     'Variation SKU (DELETE=delete variation)',  // If SKU varies by variation
+    'Materials',  // Comma-separated list of materials
+    'Shipping Profile ID',  // Shipping profile ID
+    'Processing Min (days)',  // Minimum processing time in days
+    'Processing Max (days)',  // Maximum processing time in days
     'Product ID (DO NOT EDIT)',
     'Property ID 1 (DO NOT EDIT)',
     'Property Option IDs 1 (DO NOT EDIT)',
     'Property ID 2 (DO NOT EDIT)',
     'Property Option IDs 2 (DO NOT EDIT)',
-    'Materials',  // Comma-separated list of materials
-    'Shipping Profile ID',  // Shipping profile ID
-    'Processing Min (days)',  // Minimum processing time in days
-    'Processing Max (days)',  // Maximum processing time in days
   ])
   
   // Process each listing
@@ -203,15 +203,15 @@ export function convertListingsToCSV(listings: ListingsResponse): string {
           variationPrice,  // Variation Price (if price on property)
           variationQuantity,  // Variation Quantity (if quantity on property)
           variationSKU,  // Variation SKU (if SKU on property)
+          i === 0 ? (listing.materials?.join(', ') || '') : '',  // Materials (only on first row)
+          i === 0 ? (listing.shipping_profile_id?.toString() || '') : '',  // Shipping Profile ID (only on first row)
+          i === 0 ? (listing.processing_min?.toString() || '') : '',  // Processing Min (only on first row)
+          i === 0 ? (listing.processing_max?.toString() || '') : '',  // Processing Max (only on first row)
           product.product_id.toString(),
           prop1 ? prop1.property_id.toString() : '',
           prop1 ? prop1.value_ids.join(',') : '',
           prop2 ? prop2.property_id.toString() : '',
           prop2 ? prop2.value_ids.join(',') : '',
-          i === 0 ? (listing.materials?.join(', ') || '') : '',  // Materials (only on first row)
-          i === 0 ? (listing.shipping_profile_id?.toString() || '') : '',  // Shipping Profile ID (only on first row)
-          i === 0 ? (listing.processing_min?.toString() || '') : '',  // Processing Min (only on first row)
-          i === 0 ? (listing.processing_max?.toString() || '') : '',  // Processing Max (only on first row)
         ]
         
         rows.push(row)
@@ -262,12 +262,12 @@ export function convertListingsToCSV(listings: ListingsResponse): string {
         quantity,
         sku,
         '', '', '',  // No variation price/quantity/SKU
-        productID,
-        '', '', '', '',  // No property IDs
         listing.materials?.join(', ') || '',  // Materials
         listing.shipping_profile_id?.toString() || '',  // Shipping Profile ID
         listing.processing_min?.toString() || '',  // Processing Min
         listing.processing_max?.toString() || '',  // Processing Max
+        productID,
+        '', '', '', '',  // No property IDs
       ])
     }
   }

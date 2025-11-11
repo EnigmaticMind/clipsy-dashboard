@@ -1,5 +1,4 @@
 import ContactForm from "../components/ContactForm";
-import FeatureVoting from "../components/FeatureVoting";
 
 export default function ContactPage() {
   return (
@@ -14,9 +13,6 @@ export default function ContactPage() {
           you!
         </p>
       </div>
-
-      {/* Feature Voting */}
-      <FeatureVoting />
 
       {/* Contact Form */}
       <ContactForm />

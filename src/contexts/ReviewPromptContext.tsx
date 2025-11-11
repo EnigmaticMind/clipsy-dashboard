@@ -1,8 +1,13 @@
-import { createContext, useContext, useState, useCallback, ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useState,
+  useCallback,
+  ReactNode,
+} from "react";
 import ReviewPrompt from "../components/ReviewPrompt";
-import { 
-  shouldShowReviewPrompt, 
-  trackSuccessfulOperation,
+import {
+  shouldShowReviewPrompt,
   hasPendingReviewPrompt,
   clearPendingReviewPrompt,
 } from "../services/reviewPrompt";
@@ -13,12 +18,16 @@ interface ReviewPromptContextType {
   checkPendingReviewPrompt: () => Promise<void>;
 }
 
-const ReviewPromptContext = createContext<ReviewPromptContextType | undefined>(undefined);
+const ReviewPromptContext = createContext<ReviewPromptContextType | undefined>(
+  undefined
+);
 
 export function useReviewPrompt() {
   const context = useContext(ReviewPromptContext);
   if (!context) {
-    throw new Error("useReviewPrompt must be used within a ReviewPromptProvider");
+    throw new Error(
+      "useReviewPrompt must be used within a ReviewPromptProvider"
+    );
   }
   return context;
 }
@@ -30,11 +39,8 @@ interface ReviewPromptProviderProps {
 export function ReviewPromptProvider({ children }: ReviewPromptProviderProps) {
   const [showPrompt, setShowPrompt] = useState(false);
 
-  // Track a successful operation and check if we should show the prompt
+  // Check if we should show the prompt
   const showReviewPrompt = useCallback(async () => {
-    // Track the operation
-    await trackSuccessfulOperation();
-    
     // Check if we should show the prompt
     const shouldShow = await shouldShowReviewPrompt();
     if (shouldShow) {
@@ -71,7 +77,11 @@ export function ReviewPromptProvider({ children }: ReviewPromptProviderProps) {
 
   return (
     <ReviewPromptContext.Provider
-      value={{ showReviewPrompt, checkAndShowReviewPrompt, checkPendingReviewPrompt }}
+      value={{
+        showReviewPrompt,
+        checkAndShowReviewPrompt,
+        checkPendingReviewPrompt,
+      }}
     >
       {children}
       {/* Review Prompt Modal */}
@@ -85,4 +95,3 @@ export function ReviewPromptProvider({ children }: ReviewPromptProviderProps) {
     </ReviewPromptContext.Provider>
   );
 }
-

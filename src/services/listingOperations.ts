@@ -20,6 +20,63 @@ function tagsEqual(tags1: string[], tags2: string[]): boolean {
   return true
 }
 
+// Add at the top after imports
+const ETSY_MIN_PRICE = 0.20
+
+// Helper to get a valid price (ensures it meets Etsy's minimum)
+function getValidPrice(
+  newPrice: number | null,
+  existingPrice: number | null
+): number {
+  // If new price is provided and valid, use it
+  if (newPrice !== null && newPrice >= ETSY_MIN_PRICE) {
+    return newPrice
+  }
+  
+  // If new price is provided but invalid (negative or too low), use minimum or existing
+  if (newPrice !== null) {
+    if (newPrice < 0) {
+      logger.warn(`Price ${newPrice} is negative. Using existing price or minimum.`)
+    } else if (newPrice < ETSY_MIN_PRICE) {
+      logger.warn(`Price ${newPrice} is below Etsy minimum of $${ETSY_MIN_PRICE}. Using existing price or minimum.`)
+    }
+    // Fall through to use existing price or minimum
+  }
+  
+  // If no new price but existing price is available and valid, use it
+  if (existingPrice !== null && existingPrice >= ETSY_MIN_PRICE) {
+    return existingPrice
+  }
+  
+  // Fallback to minimum price
+  if (existingPrice !== null && existingPrice < ETSY_MIN_PRICE) {
+    logger.warn(`Existing price ${existingPrice} is below Etsy minimum. Using minimum price of $${ETSY_MIN_PRICE}.`)
+  } else if (newPrice === null && existingPrice === null) {
+    logger.warn(`No price available. Using Etsy minimum price of $${ETSY_MIN_PRICE}.`)
+  }
+  return ETSY_MIN_PRICE
+}
+
+// Helper to extract price from existing listing offering
+function getExistingOfferingPrice(existingListing: Listing | null): number | null {
+  if (!existingListing || !existingListing.inventory.products.length) {
+    return null
+  }
+  
+  const product = existingListing.inventory.products[0]
+  if (!product.offerings || !product.offerings.length) {
+    return null
+  }
+  
+  const offering = product.offerings.find((o: any) => !o.is_deleted)
+  if (!offering || !offering.price) {
+    return null
+  }
+  
+  // Convert from Etsy's amount/divisor format to float
+  return offering.price.amount / offering.price.divisor
+}
+
 // Create a new listing
 export async function createListing(
   shopID: number,
@@ -251,8 +308,9 @@ export async function updateListing(
     }
   }
 
-  if (listing.hasVariations) {
-    requestBody.has_variations = true
+  // Handle has_variations change (both true and false)
+  if (existingListing === null || existingListing.has_variations !== listing.hasVariations) {
+    requestBody.has_variations = listing.hasVariations
     needsUpdate = true
   }
 
@@ -333,8 +391,30 @@ export async function updateListingInventory(
 
   if (!listing.hasVariations) {
     // No variations - single product
+    // If converting from variations, we need to include all existing products marked as deleted
+    if (existingListing?.has_variations && existingListing.inventory.products.length > 0) {
+      // Include all existing products marked for deletion
+      for (const existingProduct of existingListing.inventory.products) {
+        if (!existingProduct.is_deleted) {
+          inventoryBody.products.push({
+            product_id: existingProduct.product_id,
+            is_deleted: true,
+            sku: existingProduct.sku,
+            property_values: existingProduct.property_values,
+            offerings: existingProduct.offerings.map((o: any) => ({
+              ...o,
+              is_deleted: true
+            })),
+          })
+        }
+      }
+    }
+    
+    const existingPrice = getExistingOfferingPrice(existingListing)
+    const validPrice = getValidPrice(listing.price, existingPrice)
+    
     const offering: any = {
-      price: 0, // Default price as float (inventory endpoint expects float)
+      price: validPrice, // Use validated price that meets Etsy minimum
       quantity: 0,
       is_enabled: true,
     }
@@ -356,10 +436,7 @@ export async function updateListingInventory(
       logger.warn('No readiness_state_id available for new listing. This may cause an error.')
     }
 
-    if (listing.price !== null) {
-      // Inventory endpoint expects price as a float (e.g., 45.99)
-      offering.price = listing.price
-    }
+    // Price is already set above with validation
     if (listing.quantity !== null) {
       offering.quantity = listing.quantity
     } else {

@@ -55,6 +55,16 @@ export default function Navigation() {
               Contact
             </Link>
             <Link
+              to="/feature-requests"
+              className={`px-4 py-2 rounded-lg transition ${
+                isActive("/feature-requests")
+                  ? "bg-indigo-600 text-white"
+                  : "text-gray-700 hover:bg-gray-100"
+              }`}
+            >
+              Feature Requests
+            </Link>
+            <Link
               to="/settings"
               className={`px-4 py-2 rounded-lg transition ${
                 isActive("/settings")

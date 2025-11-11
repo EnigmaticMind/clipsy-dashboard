@@ -6,10 +6,12 @@ import { ToastProvider } from "./contexts/ToastContext";
 import { ReviewPromptProvider } from "./contexts/ReviewPromptContext";
 import { initializeFirstUseDate } from "./services/reviewPrompt";
 import { testAnalytics } from "./services/analytics";
+import { logger } from "./utils/logger";
 import ProtectedLayout from "./components/ProtectedLayout";
 import DownloadUploadPage from "./pages/DownloadUploadPage";
 import HowItWorksPage from "./pages/HowItWorksPage";
 import ContactPage from "./pages/ContactPage";
+import FeatureRequestsPage from "./pages/FeatureRequestsPage";
 import PrivacyPolicyPage from "./pages/PrivacyPolicyPage";
 import SettingsPage from "./pages/SettingsPage";
 import EtsyAuthPage from "./pages/auth/EtsyAuthPage";
@@ -19,12 +21,60 @@ import MainLayout from "./components/MainLayout";
 // Initialize first use date tracking
 initializeFirstUseDate().catch(console.error);
 
-// Expose test function to window for debugging (dev only)
+// Expose test functions to window for debugging (dev only)
 if (import.meta.env?.MODE === "development" || import.meta.env?.DEV === true) {
   (
-    window as typeof window & { testAnalytics: typeof testAnalytics }
+    window as typeof window & {
+      testAnalytics: typeof testAnalytics;
+      testReviewPrompt: {
+        show: () => Promise<void>;
+        reset: () => Promise<void>;
+      };
+    }
   ).testAnalytics = testAnalytics;
-  console.log("💡 Tip: Call window.testAnalytics() to test Google Analytics");
+
+  // Review prompt test functions
+  (
+    window as typeof window & {
+      testReviewPrompt: {
+        show: () => Promise<void>;
+        reset: () => Promise<void>;
+      };
+    }
+  ).testReviewPrompt = {
+    // Force show the review prompt (sets pending flag and clears blockers)
+    show: async () => {
+      // Set pending flag
+      await chrome.storage.local.set({
+        "clipsy:review_prompt_pending": true,
+      });
+      // Clear flags that would prevent showing
+      await chrome.storage.local.remove([
+        "clipsy:review_prompt_last_shown",
+        "clipsy:review_prompt_dismissed",
+      ]);
+      logger.log(
+        "✅ Review prompt pending flag set. Refresh the page to see it."
+      );
+    },
+    // Reset review prompt state (clears timer countdown)
+    reset: async () => {
+      await chrome.storage.local.remove([
+        "clipsy:review_prompt_last_shown",
+        "clipsy:review_prompt_dismissed",
+        "clipsy:review_prompt_pending",
+      ]);
+      logger.log("✅ Review prompt state reset. Timer countdown cleared.");
+    },
+  };
+
+  logger.log("💡 Tip: Call window.testAnalytics() to test Google Analytics");
+  logger.log(
+    "💡 Tip: Call window.testReviewPrompt.show() to force show review prompt"
+  );
+  logger.log(
+    "💡 Tip: Call window.testReviewPrompt.reset() to reset review prompt timer"
+  );
 }
 
 // Check for OAuth callback on page load (Etsy OAuth redirects with query params)
@@ -79,6 +129,10 @@ const router = createHashRouter([
       {
         path: "contact",
         element: <ContactPage />,
+      },
+      {
+        path: "feature-requests",
+        element: <FeatureRequestsPage />,
       },
       {
         path: "privacy",

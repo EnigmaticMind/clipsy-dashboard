@@ -109,8 +109,8 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
     // 5: Variation, 6: Property Name 1, 7: Property Option 1, 8: Property Name 2, 9: Property Option 2,
     // 10: Price, 11: Currency Code, 12: Quantity, 13: SKU,
     // 14: Variation Price, 15: Variation Quantity, 16: Variation SKU,
-    // 17: Product ID, 18: Property ID 1, 19: Property Option IDs 1, 20: Property ID 2, 21: Property Option IDs 2,
-    // 22: Materials, 23: Shipping Profile ID, 24: Processing Min, 25: Processing Max
+    // 17: Materials, 18: Shipping Profile ID, 19: Processing Min, 20: Processing Max,
+    // 21: Product ID, 22: Property ID 1, 23: Property Option IDs 1, 24: Property ID 2, 25: Property Option IDs 2
 
     const row = {
       listingID: safeGet(record, 0),
@@ -130,25 +130,47 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
       variationPrice: safeGet(record, 14),
       variationQuantity: safeGet(record, 15),
       variationSKU: safeGet(record, 16),
-      productID: safeGet(record, 17),
-      propertyID1: safeGet(record, 18),
-      propertyOptionIDs1: safeGet(record, 19),
-      propertyID2: safeGet(record, 20),
-      propertyOptionIDs2: safeGet(record, 21),
-      materials: safeGet(record, 22),
-      shippingProfileID: safeGet(record, 23),
-      processingMin: safeGet(record, 24),
-      processingMax: safeGet(record, 25),
+      materials: safeGet(record, 17),  // Changed from 22
+      shippingProfileID: safeGet(record, 18),  // Changed from 23
+      processingMin: safeGet(record, 19),  // Changed from 24
+      processingMax: safeGet(record, 20),  // Changed from 25
+      productID: safeGet(record, 21),  // Changed from 17 - THIS IS THE KEY FIX
+      propertyID1: safeGet(record, 22),  // Changed from 18
+      propertyOptionIDs1: safeGet(record, 23),  // Changed from 19
+      propertyID2: safeGet(record, 24),  // Changed from 20
+      propertyOptionIDs2: safeGet(record, 25),  // Changed from 21
     }
 
     // Determine if this is a new listing row
     // New format: Title/Description/Status/Tags are only on first row, Listing ID may be empty on variation rows
     const listingID = parseInt(row.listingID, 10) || 0
     
+    // Check if this row has variation data (property options)
+    const hasVariationData = row.propertyOption1 !== '' || row.propertyOption2 !== ''
+    
     let isNewListing = false
     if (listingID > 0) {
-      // Has Listing ID - new listing if different from current
-      isNewListing = listingID !== currentListingID
+      // Has Listing ID
+      if (listingID === currentListingID && currentListing !== null) {
+        // Same Listing ID as current - this is a variation row or update to existing listing
+        // If it has variation data and no title (or title matches), it's definitely a variation row
+        isNewListing = false
+      } else if (hasVariationData && row.title === '') {
+        // Has Listing ID, has variation data, but no title - this is a variation row
+        // Check if this Listing ID matches any existing listing we've seen
+        // If currentListing exists and has this Listing ID, it's a variation
+        if (currentListing !== null && currentListing.listingID === listingID) {
+          isNewListing = false
+        } else {
+          // This is a variation row for a listing we haven't processed the header for yet
+          // We can't process it without the listing header, so skip it for now
+          // (The header row should come first in the CSV)
+          continue
+        }
+      } else {
+        // Different Listing ID or has title - new listing
+        isNewListing = true
+      }
     } else if (row.title !== '') {
       // Has Title (first row of a listing) - new listing if we don't have a current listing or title is different
       isNewListing = currentListing === null || row.title !== currentListing.title
@@ -160,6 +182,7 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
       }
       // This is a variation row - use current listing's title/description/status/tags
       // We'll handle this below
+      isNewListing = false
     }
 
     if (isNewListing) {
@@ -204,7 +227,7 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
         variations: [],
         toDelete,
         quantity: row.quantity ? parseInt(row.quantity, 10) || null : null,
-        price: row.price ? parseFloat(row.price) || null : null,
+        price: parsePrice(row.price),
         materials,
         shippingProfileID,
         processingMin,
@@ -215,9 +238,20 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
       if (hasVariations && (row.propertyOption1 !== '' || row.propertyOption2 !== '')) {
         const variation = parseVariation(row)
         currentListing.variations.push(variation)
+        
+        // If listing price is empty but variation has a price, use variation price as listing price
+        // (Etsy requires a listing-level price even when price is on property)
+        if (currentListing.price === null && variation.propertyPrice !== null) {
+          currentListing.price = variation.propertyPrice
+        }
       }
     } else if (currentListing !== null) {
-      // Variation row (same listing, title/description/status/tags are empty)
+      // Variation row (same listing, title/description/status/tags are empty or same)
+      // This can happen when:
+      // 1. Listing ID matches current listing ID
+      // 2. No Listing ID and no Title (pure variation row)
+      // 3. Listing ID matches but row has variation data
+      
       // Update listing-level fields if they're provided (for backwards compatibility)
       if (row.title !== '') {
         currentListing.title = row.title
@@ -232,10 +266,25 @@ function parseCSVRecords(records: string[][]): ProcessedListing[] {
         currentListing.tags = parseTags(row.tags)
       }
       
-      // Add variation if this row has variation data
-      if (currentListing.hasVariations && (row.propertyOption1 !== '' || row.propertyOption2 !== '')) {
+      // Add variation if this row has variation data (property options)
+      // If we encounter a variation row, the listing has variations (even if first row didn't indicate it)
+      if (hasVariationData) {
+        // Update hasVariations flag if this is the first variation we encounter
+        if (!currentListing.hasVariations) {
+          currentListing.hasVariations = true
+        }
         const variation = parseVariation(row)
         currentListing.variations.push(variation)
+      }
+    } else {
+      // currentListing is null but isNewListing is false
+      // This shouldn't happen, but if it does and we have variation data with a Listing ID,
+      // we might need to create a new listing entry
+      if (listingID > 0 && hasVariationData && row.title === '') {
+        // This is a variation row for a listing we haven't seen the header for yet
+        // We can't process it without the listing header, so skip it
+        // (This is an edge case that shouldn't happen in normal usage)
+        continue
       }
     }
   }
@@ -253,6 +302,29 @@ function safeGet(record: string[], index: number): string {
     return record[index].trim()
   }
   return ''
+}
+
+// Parse price from string, handling currency symbols, commas, and whitespace
+function parsePrice(priceStr: string): number | null {
+  if (!priceStr || priceStr.trim() === '') {
+    return null
+  }
+  
+  // Remove currency symbols, commas, and whitespace
+  // Handle common formats: $10.99, 10,99, €10.99, £10.99, etc.
+  let cleaned = priceStr.trim()
+    .replace(/[$€£¥₹,]/g, '') // Remove currency symbols and commas
+    .replace(/\s+/g, '') // Remove whitespace
+  
+  // Parse as float
+  const parsed = parseFloat(cleaned)
+  
+  // Return null if NaN or invalid
+  if (isNaN(parsed) || !isFinite(parsed)) {
+    return null
+  }
+  
+  return parsed
 }
 
 function parseTags(tagsStr: string): string[] {
@@ -289,9 +361,7 @@ function parseVariation(row: {
     propertyQuantity: row.variationQuantity
       ? parseInt(row.variationQuantity, 10) || null
       : null,
-    propertyPrice: row.variationPrice
-      ? parseFloat(row.variationPrice) || null
-      : null,
+    propertyPrice: parsePrice(row.variationPrice),
     propertyID1: parseInt(row.propertyID1, 10) || 0,
     propertyOptionIDs1: row.propertyOptionIDs1
       ? row.propertyOptionIDs1

@@ -11,7 +11,7 @@ const isDev =
   import.meta.env?.MODE === 'development' || import.meta.env?.DEV === true;
 
 // TEMPORARY: Set to true to enable analytics in development mode for testing
-const ENABLE_ANALYTICS_IN_DEV = true;
+const ENABLE_ANALYTICS_IN_DEV = false; // Changed from true to false
 
 // Storage key for analytics opt-out
 const ANALYTICS_OPT_OUT_KEY = 'clipsy:analytics_opt_out';

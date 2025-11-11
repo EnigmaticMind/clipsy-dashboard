@@ -1,8 +1,9 @@
 // Google Sheets service - handles creating, reading, and updating Google Sheets
 
 import { getValidAccessToken } from './googleSheetsOAuth'
-import { ListingsResponse } from './etsyApi'
+import { ListingsResponse, Listing, ListingStatus } from './etsyApi'
 import { convertListingsToCSV } from './csvService'
+import { logger } from '../utils/logger'
 
 const GOOGLE_SHEETS_API_BASE = 'https://sheets.googleapis.com/v4'
 const GOOGLE_DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3'
@@ -205,15 +206,15 @@ async function createNewSheet(shopId: number, shopName: string): Promise<SheetMe
     'Variation Price',
     'Variation Quantity',
     'Variation SKU (DELETE=delete variation)',
+    'Materials',
+    'Shipping Profile ID',
+    'Processing Min (days)',
+    'Processing Max (days)',
     'Product ID (DO NOT EDIT)',
     'Property ID 1 (DO NOT EDIT)',
     'Property Option IDs 1 (DO NOT EDIT)',
     'Property ID 2 (DO NOT EDIT)',
-    'Property Option IDs 2 (DO NOT EDIT)',
-    'Materials',
-    'Shipping Profile ID',
-    'Processing Min (days)',
-    'Processing Max (days)'
+    'Property Option IDs 2 (DO NOT EDIT)'
   ]
   
   // Create spreadsheet (will have default Sheet1)
@@ -322,58 +323,73 @@ async function createNewSheet(shopId: number, shopName: string): Promise<SheetMe
   return metadata
 }
 
-// Write listings to Google Sheet - creates separate sheets per status
-// requestedStatus: if provided, only process this status. If undefined, process all statuses.
-// Returns the sheet name that was written to (for opening the correct tab)
-export async function writeListingsToSheet(
-  sheetId: string,
-  listings: ListingsResponse,
-  requestedStatus?: string
-): Promise<string | null> {
+// Get sheet name for status
+function getSheetNameForStatus(status: ListingStatus): string {
+  const statusMap: Record<ListingStatus, string> = {
+    'active': 'Active',
+    'inactive': 'Inactive',
+    'draft': 'Draft',
+    'sold_out': 'Sold Out',
+    'expired': 'Expired'
+  }
+  return statusMap[status] || 'Unknown'
+}
+
+// Validate status and return all possible statuses
+function getStatusesToProcess(requestedStatus?: ListingStatus): ListingStatus[] {
   // Define all possible statuses
-  const allStatuses: Array<'active' | 'inactive' | 'draft' | 'sold_out' | 'expired'> = [
-    'active', 'inactive', 'draft', 'sold_out', 'expired'
-  ]
+  const allStatuses: ListingStatus[] = ['active', 'inactive', 'draft', 'sold_out', 'expired']
   
-  // Determine which statuses to process
-  let statusesToProcess: Array<'active' | 'inactive' | 'draft' | 'sold_out' | 'expired'>
-  
-  if (!requestedStatus) {
-    // No status specified, process all statuses
-    statusesToProcess = allStatuses
-  } else {
+  if (requestedStatus) {
     // Only process the requested status
     // Map from UI status names to API status values
-    const statusMap: Record<string, 'active' | 'inactive' | 'draft' | 'sold_out' | 'expired'> = {
+    const statusMap: Record<ListingStatus, ListingStatus> = {
       'active': 'active',
       'inactive': 'inactive',
       'draft': 'draft',
       'sold_out': 'sold_out',
       'expired': 'expired'
     }
-    const mappedStatus = statusMap[requestedStatus.toLowerCase()]
+    const mappedStatus = statusMap[requestedStatus.toLowerCase() as ListingStatus]
     if (mappedStatus && allStatuses.includes(mappedStatus)) {
-      statusesToProcess = [mappedStatus]
-    } else {
-      // Invalid status, process all
-      statusesToProcess = allStatuses
+      return [mappedStatus]
     }
   }
-  
-  // Group listings by status
-  const listingsByStatus = new Map<string, typeof listings.results>()
-  
+
+  return allStatuses
+}
+
+// Group listings by status
+function groupListingsByStatus(listings: ListingsResponse): Map<ListingStatus, Listing[]> {
+  const listingsByStatus = new Map<ListingStatus, Listing[]>()
   for (const listing of listings.results) {
     const status = listing.state || 'active'
     if (!listingsByStatus.has(status)) {
       listingsByStatus.set(status, [])
     }
-    listingsByStatus.get(status)!.push(listing)
   }
+  return listingsByStatus
+}
+
+// Write listings to Google Sheet - creates separate sheets per status
+// requestedStatus: if provided, only process this status. If undefined, process all statuses.
+// Returns the sheet name that was written to (for opening the correct tab)
+export async function writeListingsToSheet(
+  sheetId: string,
+  listings: ListingsResponse,
+  requestedStatus?: ListingStatus
+): Promise<string | null> {
+
+  // Validate status and return all possible statuses
+  const statusesToProcess = getStatusesToProcess(requestedStatus)
+  
+  // Group listings by status
+  const listingsByStatus = groupListingsByStatus(listings)
   
   // Process only the requested statuses
   let writtenSheetName: string | null = null
   
+  // Process each status
   for (const status of statusesToProcess) {
     const sheetName = getSheetNameForStatus(status)
     const statusListings = listingsByStatus.get(status) || []
@@ -381,46 +397,165 @@ export async function writeListingsToSheet(
     // Ensure sheet exists
     await ensureSheetExists(sheetId, sheetName)
     
-    // Clear existing data (but keep header)
-    await clearSheetData(sheetId, sheetName)
+    // Read existing data (don't clear - we'll update or append)
+    const existingData = await readSheetData(sheetId, sheetName)
+    const existingRows = existingData.values || []
     
-    // Convert listings to CSV format
-    const csvContent = convertListingsToCSV({ count: statusListings.length, results: statusListings })
-    const allRows = parseCSVToRows(csvContent)
+    // Build maps for matching existing rows
+    // Map: listingId -> rowIndex (1-based, row 1 is header)
+    const listingIdToRowIndex = new Map<number, number>()
+    // Map: productId -> rowIndex (1-based, row 1 is header)
+    const productIdToRowIndex = new Map<number, number>()
     
-    // Find header row
-    let headerRowIndex = -1
-    for (let i = 0; i < allRows.length; i++) {
-      if (allRows[i][0] === 'Listing ID') {
-        headerRowIndex = i
+    // Find header row index in existing data
+    let existingHeaderRowIndex = -1
+    for (let i = 0; i < existingRows.length; i++) {
+      if (existingRows[i] && existingRows[i][0] === 'Listing ID') {
+        existingHeaderRowIndex = i
         break
       }
     }
     
-    if (headerRowIndex >= 0) {
+    // Build maps from existing data (skip header row)
+    if (existingHeaderRowIndex >= 0) {
+      for (let i = existingHeaderRowIndex + 1; i < existingRows.length; i++) {
+        const row = existingRows[i] || []
+        const listingId = row[0]?.trim()
+        const productId = row[21]?.trim() // Product ID is column 21 (was 17)
+        
+        // Map listing ID (only if present, and only map first occurrence per listing)
+        if (listingId && listingId !== '') {
+          const listingIdNum = parseInt(listingId, 10)
+          if (!isNaN(listingIdNum) && !listingIdToRowIndex.has(listingIdNum)) {
+            listingIdToRowIndex.set(listingIdNum, i + 1) // +1 because row index is 1-based
+          }
+        }
+        
+        // Map product ID (always map, for variations)
+        if (productId && productId !== '') {
+          const productIdNum = parseInt(productId, 10)
+          if (!isNaN(productIdNum)) {
+            productIdToRowIndex.set(productIdNum, i + 1) // +1 because row index is 1-based
+          }
+        }
+      }
+    }
+    
+    // Convert new listings to CSV format
+    const csvContent = convertListingsToCSV({ count: statusListings.length, results: statusListings })
+    const allRows = parseCSVToRows(csvContent)
+    
+    // Find header row in new data
+    let newHeaderRowIndex = -1
+    for (let i = 0; i < allRows.length; i++) {
+      if (allRows[i][0] === 'Listing ID') {
+        newHeaderRowIndex = i
+        break
+      }
+    }
+    
+    if (newHeaderRowIndex >= 0) {
       // Get header and data rows
-      const headerRow = allRows[headerRowIndex]
-      const dataRows = allRows.slice(headerRowIndex + 1)
+      const headerRow = allRows[newHeaderRowIndex]
+      const newDataRows = allRows.slice(newHeaderRowIndex + 1)
       
-      // Write header first
-      await batchUpdateSheet(sheetId, sheetName, [headerRow], 1)
+      // Ensure header exists (update if needed or create if missing)
+      if (existingHeaderRowIndex < 0) {
+        // No header exists, write it
+        await batchUpdateSheet(sheetId, sheetName, [headerRow], 1)
+        existingHeaderRowIndex = 0
+      }
       
-      // Write data rows in batches
-      if (dataRows.length > 0) {
+      // Separate rows into updates and appends
+      const rowsToUpdate: Array<{ rowIndex: number; data: string[]; existingRow: string[] }> = []
+      const rowsToAppend: string[][] = []
+      
+      for (const newRow of newDataRows) {
+        const listingId = newRow[0]?.trim()
+        const productId = newRow[21]?.trim() // Product ID is column 21
+        
+        let rowIndex: number | undefined
+        let existingRow: string[] | undefined
+        
+        // Priority: Product ID match (for variations) > Listing ID match (for first row)
+        if (productId && productId !== '') {
+          const productIdNum = parseInt(productId, 10)
+          if (!isNaN(productIdNum)) {
+            rowIndex = productIdToRowIndex.get(productIdNum)
+            if (rowIndex && existingRows.length > rowIndex - 1) {
+              existingRow = existingRows[rowIndex - 1] || [] // -1 because rowIndex is 1-based
+            }
+          }
+        }
+        
+        // If no product ID match, try listing ID match (for first row of listing)
+        if (!rowIndex && listingId && listingId !== '') {
+          const listingIdNum = parseInt(listingId, 10)
+          if (!isNaN(listingIdNum)) {
+            rowIndex = listingIdToRowIndex.get(listingIdNum)
+            if (rowIndex && existingRows.length > rowIndex - 1) {
+              existingRow = existingRows[rowIndex - 1] || []
+            }
+          }
+        }
+        
+        if (rowIndex && existingRow) {
+          // Merge: only update fields that match Etsy, keep sheet values for mismatched fields
+          const mergedRow = mergeRowData(newRow, existingRow)
+          rowsToUpdate.push({ rowIndex, data: mergedRow, existingRow })
+        } else {
+          // Append new row
+          rowsToAppend.push(newRow)
+        }
+      }
+      
+      // Update existing rows in batches
+      if (rowsToUpdate.length > 0) {
+        // Group updates by row index to batch them efficiently
+        const updatesByRow = new Map<number, string[]>()
+        for (const update of rowsToUpdate) {
+          updatesByRow.set(update.rowIndex, update.data)
+        }
+        
+        // Update each row (Google Sheets API requires individual updates for different rows)
+        let updateCount = 0
+        for (const [rowIndex, data] of updatesByRow) {
+          await batchUpdateSheet(sheetId, sheetName, [data], rowIndex)
+          updateCount++
+          
+          // Rate limit: small delay between updates, longer delay every 10 updates
+          if (updateCount % 10 === 0) {
+            await new Promise(resolve => setTimeout(resolve, 1100))
+          } else {
+            await new Promise(resolve => setTimeout(resolve, 100))
+          }
+        }
+      }
+      
+      // Append new rows
+      if (rowsToAppend.length > 0) {
+        // Find the last row with data (existing rows + header)
+        const lastRowIndex = existingRows.length > 0 ? existingRows.length : 1
+        
         const batchSize = 1000
-        for (let i = 0; i < dataRows.length; i += batchSize) {
-          const batch = dataRows.slice(i, i + batchSize)
-          await batchUpdateSheet(sheetId, sheetName, batch, i + 2) // +2 because row 1 is header
+        for (let i = 0; i < rowsToAppend.length; i += batchSize) {
+          const batch = rowsToAppend.slice(i, i + batchSize)
+          const startRow = lastRowIndex + i + 1 // +1 because we're appending after last row
+          await batchUpdateSheet(sheetId, sheetName, batch, startRow)
           
           // Rate limit: 60 requests/minute = 1 request/second
-          if (i + batchSize < dataRows.length) {
+          if (i + batchSize < rowsToAppend.length) {
             await new Promise(resolve => setTimeout(resolve, 1100))
           }
         }
       }
       
+      // Re-read data for formatting (get all rows including updates and appends)
+      const updatedData = await readSheetData(sheetId, sheetName)
+      const allDataRows = (updatedData.values || []).slice(existingHeaderRowIndex >= 0 ? existingHeaderRowIndex + 1 : 1)
+      
       // Apply formatting to make it look better
-      await applySheetFormatting(sheetId, sheetName, headerRow.length, dataRows)
+      await applySheetFormatting(sheetId, sheetName, headerRow.length, allDataRows)
       
       // Track the first sheet written (or the requested status sheet)
       if (!writtenSheetName || (requestedStatus && status === requestedStatus.toLowerCase())) {
@@ -461,18 +596,6 @@ function parseCSVToRows(csvContent: string): string[][] {
     values.push(current) // Add last value
     return values
   })
-}
-
-// Get sheet name for status
-function getSheetNameForStatus(status: string): string {
-  const statusMap: Record<string, string> = {
-    'active': 'Active',
-    'inactive': 'Inactive',
-    'draft': 'Draft',
-    'sold_out': 'Sold Out',
-    'expired': 'Expired'
-  }
-  return statusMap[status] || 'Other'
 }
 
 // Ensure sheet exists in spreadsheet
@@ -538,6 +661,10 @@ async function ensureSheetExists(sheetId: string, sheetName: string): Promise<vo
       'Variation Price',
       'Variation Quantity',
       'Variation SKU (DELETE=delete variation)',
+      'Materials',
+      'Shipping Profile ID',
+      'Processing Min (days)',
+      'Processing Max (days)',
       'Product ID (DO NOT EDIT)',
       'Property ID 1 (DO NOT EDIT)',
       'Property Option IDs 1 (DO NOT EDIT)',
@@ -569,32 +696,6 @@ async function readSheetData(sheetId: string, sheetName: string): Promise<{ valu
   return await response.json()
 }
 
-// Clear sheet data (but keep header row)
-async function clearSheetData(sheetId: string, sheetName: string): Promise<void> {
-  const token = await getValidAccessToken()
-  
-  // Read existing data to find where data starts (after header)
-  const existingData = await readSheetData(sheetId, sheetName)
-  const existingRows = existingData.values || []
-  
-  if (existingRows.length <= 1) {
-    // Only header or empty, nothing to clear
-    return
-  }
-  
-  // Clear from row 2 onwards (row 1 is header)
-  const range = `${sheetName}!A2:Z`
-  await fetch(
-    `${GOOGLE_SHEETS_API_BASE}/spreadsheets/${sheetId}/values/${range}:clear`,
-    {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      }
-    }
-  )
-}
 
 // Apply formatting to make the sheet look better
 async function applySheetFormatting(
@@ -662,7 +763,7 @@ async function applySheetFormatting(
     }
   })
   
-  // 2. Bold header row with gray background
+  // 2. Bold header row with light blue background
   requests.push({
     repeatCell: {
       range: {
@@ -679,8 +780,8 @@ async function applySheetFormatting(
           },
           backgroundColor: {
             red: 0.9,
-            green: 0.9,
-            blue: 0.9
+            green: 0.95,
+            blue: 1.0
           }
         }
       },
@@ -700,38 +801,7 @@ async function applySheetFormatting(
     }
   })
   
-  // 4. Add alternating row colors (banded rows) for better readability
-  requests.push({
-    addBanding: {
-      bandedRange: {
-        range: {
-          sheetId: sheetIdNum,
-          startRowIndex: 1, // Start after header
-          endRowIndex: 10000, // Large number to cover all rows
-          startColumnIndex: 0,
-          endColumnIndex: numColumns
-        },
-        rowProperties: {
-          headerColor: {
-            red: 1.0,
-            green: 1.0,
-            blue: 1.0
-          },
-          firstBandColor: {
-            red: 1.0,
-            green: 1.0,
-            blue: 1.0
-          },
-          secondBandColor: {
-            red: 0.98,
-            green: 0.98,
-            blue: 0.98
-          }
-        }
-      }
-    }
-  })
-  
+  // 4. Remove banded rows (we'll apply custom colors instead)
   // 5. Format price columns as currency (column K = Price, column O = Variation Price)
   // Price is column 11 (index 10), Variation Price is column 15 (index 14)
   if (numColumns > 10) {
@@ -772,6 +842,77 @@ async function applySheetFormatting(
             numberFormat: {
               type: 'CURRENCY',
               pattern: '"$"#,##0.00'
+            }
+          }
+        },
+        fields: 'userEnteredFormat.numberFormat'
+      }
+    })
+  }
+  
+  // 5b. Format Processing Min and Processing Max as numbers (columns T and U, indices 19 and 20)
+  if (numColumns > 19) {
+    requests.push({
+      repeatCell: {
+        range: {
+          sheetId: sheetIdNum,
+          startRowIndex: 1,
+          endRowIndex: 10000,
+          startColumnIndex: 19, // Processing Min column
+          endColumnIndex: 20
+        },
+        cell: {
+          userEnteredFormat: {
+            numberFormat: {
+              type: 'NUMBER',
+              pattern: '0'
+            }
+          }
+        },
+        fields: 'userEnteredFormat.numberFormat'
+      }
+    })
+  }
+  
+  if (numColumns > 20) {
+    requests.push({
+      repeatCell: {
+        range: {
+          sheetId: sheetIdNum,
+          startRowIndex: 1,
+          endRowIndex: 10000,
+          startColumnIndex: 20, // Processing Max column
+          endColumnIndex: 21
+        },
+        cell: {
+          userEnteredFormat: {
+            numberFormat: {
+              type: 'NUMBER',
+              pattern: '0'
+            }
+          }
+        },
+        fields: 'userEnteredFormat.numberFormat'
+      }
+    })
+  }
+  
+  // 5c. Format Shipping Profile ID as number (column S, index 18)
+  if (numColumns > 18) {
+    requests.push({
+      repeatCell: {
+        range: {
+          sheetId: sheetIdNum,
+          startRowIndex: 1,
+          endRowIndex: 10000,
+          startColumnIndex: 18, // Shipping Profile ID column
+          endColumnIndex: 19
+        },
+        cell: {
+          userEnteredFormat: {
+            numberFormat: {
+              type: 'NUMBER',
+              pattern: '0'
             }
           }
         },
@@ -826,8 +967,8 @@ async function applySheetFormatting(
     const listingId = dataRows[i][0]?.toString().trim()
     const rowIndex = i + 2 // +2 because row 1 is header, and Sheets API is 1-based
     
-    if (listingId) {
-      // This is a parent row
+    if (listingId && listingId !== '') {
+      // This is a parent row (product/listing row)
       // Save previous group if it had variations
       if (currentParentRow >= 0 && currentVariations.length > 0) {
         listingGroups.push({ parentRow: currentParentRow, variationRows: currentVariations })
@@ -843,56 +984,52 @@ async function applySheetFormatting(
     }
   }
   // Save last group
-  if (currentParentRow >= 0 && currentVariations.length > 0) {
+  if (currentParentRow >= 0) {
     listingGroups.push({ parentRow: currentParentRow, variationRows: currentVariations })
   }
   
-  // Apply formatting to each listing group
+  // Apply grey background to all parent rows (products)
   for (const group of listingGroups) {
-    const firstRow = group.parentRow - 1 // Convert to 0-based
-    const lastRow = group.variationRows.length > 0 
-      ? group.variationRows[group.variationRows.length - 1] - 1 
-      : firstRow
-    
-    // 1. Style parent row with different background (light gray)
     requests.push({
       repeatCell: {
         range: {
           sheetId: sheetIdNum,
-          startRowIndex: firstRow,
-          endRowIndex: firstRow + 1,
+          startRowIndex: group.parentRow - 1, // Convert to 0-based
+          endRowIndex: group.parentRow, // Exclusive
           startColumnIndex: 0,
           endColumnIndex: numColumns
         },
         cell: {
           userEnteredFormat: {
             backgroundColor: {
-              red: 0.91,  // Light gray
-              green: 0.91,
-              blue: 0.91
+              red: 0.9,  // Grey
+              green: 0.9,
+              blue: 0.9
             }
           }
         },
         fields: 'userEnteredFormat.backgroundColor'
       }
     })
-    
-    // 3. Style variation rows with light blue background
+  }
+  
+  // Apply white background to all variation rows
+  for (const group of listingGroups) {
     if (group.variationRows.length > 0) {
       requests.push({
         repeatCell: {
           range: {
             sheetId: sheetIdNum,
-            startRowIndex: group.variationRows[0] - 1,
-            endRowIndex: lastRow,
+            startRowIndex: group.variationRows[0] - 1, // Convert to 0-based
+            endRowIndex: group.variationRows[group.variationRows.length - 1], // Exclusive, 1-based
             startColumnIndex: 0,
             endColumnIndex: numColumns
           },
           cell: {
             userEnteredFormat: {
               backgroundColor: {
-                red: 0.99,
-                green: 0.99,
+                red: 1.0,  // White
+                green: 1.0,
                 blue: 1.0
               }
             }
@@ -901,60 +1038,49 @@ async function applySheetFormatting(
         }
       })
     }
-    
-    // 4. Add borders around entire listing group
-    requests.push({
-      updateBorders: {
-        range: {
-          sheetId: sheetIdNum,
-          startRowIndex: firstRow,
-          endRowIndex: lastRow,
-          startColumnIndex: 0,
-          endColumnIndex: numColumns
-        },
-        top: {
-          style: 'SOLID',
-          width: 2,
-          color: { red: 0.7, green: 0.7, blue: 0.7 }
-        },
-        bottom: {
-          style: 'SOLID',
-          width: 2,
-          color: { red: 0.7, green: 0.7, blue: 0.7 }
-        },
-        left: {
-          style: 'SOLID',
-          width: 1,
-          color: { red: 0.7, green: 0.7, blue: 0.7 }
-        },
-        right: {
-          style: 'SOLID',
-          width: 1,
-          color: { red: 0.7, green: 0.7, blue: 0.7 }
-        }
+  }
+  
+  // Also handle standalone rows (listings without variations that aren't in groups)
+  // Find all parent rows
+  const allParentRows: number[] = []
+  for (let i = 0; i < dataRows.length; i++) {
+    const listingId = dataRows[i][0]?.toString().trim()
+    if (listingId && listingId !== '') {
+      allParentRows.push(i + 2) // +2 for header and 1-based
+    }
+  }
+  
+  // Apply grey to standalone parent rows (those without variations in the next row)
+  for (const parentRow of allParentRows) {
+    const isInGroup = listingGroups.some(g => g.parentRow === parentRow)
+    if (isInGroup) {
+      const group = listingGroups.find(g => g.parentRow === parentRow)!
+      if (group.variationRows.length === 0) {
+        // Standalone listing, already handled above
       }
-    })
-    
-    // 5. Group only variation rows (not parent row) if variations exist
-    if (group.variationRows.length > 0) {
-      // variationRows contains 1-based row indices (row 2 = index 2, row 3 = index 3, etc.)
-      // Convert to 0-based for API
-      const variationStartRow = group.variationRows[0] - 1 // First variation row (0-based)
-      const variationEndRow = group.variationRows[group.variationRows.length - 1] - 1 // Last variation row (0-based)
-      
-      // Only create group if we have at least 2 rows to group (need multiple rows for grouping to work)
-      if (variationEndRow > variationStartRow) {
-        requests.push({
-          addDimensionGroup: {
-            range: {
-              sheetId: sheetIdNum,
-              dimension: 'ROWS',
-              startIndex: variationStartRow,
-              endIndex: variationEndRow + 1 // endIndex is exclusive, so +1 to include last row
+    } else {
+      // Shouldn't happen, but handle it
+      requests.push({
+        repeatCell: {
+          range: {
+            sheetId: sheetIdNum,
+            startRowIndex: parentRow - 1,
+            endRowIndex: parentRow,
+            startColumnIndex: 0,
+            endColumnIndex: numColumns
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: {
+                red: 0.9,
+                green: 0.9,
+                blue: 0.9
+              }
             }
-          }
-        })
-      }
+          },
+          fields: 'userEnteredFormat.backgroundColor'
+        }
+      })
     }
   }
   
@@ -1137,8 +1263,11 @@ export async function readListingsFromSheetAsFile(sheetId: string): Promise<File
   // Convert rows to CSV format
   // Keep all rows (including info rows and header) to match original CSV format
   const csvLines = allRows.map((row: string[]) => {
-    // Ensure row has at least 22 columns (pad with empty strings if needed)
-    const paddedRow = [...row, ...Array(22 - row.length).fill('')]
+    // Ensure row has at least 26 columns (pad with empty strings if needed)
+    // Only pad if row.length < 26, otherwise use row as-is
+    const paddedRow = row.length < 26 
+      ? [...row, ...Array(26 - row.length).fill('')]
+      : row
     
     return paddedRow.map((cell: string) => {
       const cellValue = cell || ''
@@ -1160,14 +1289,15 @@ export async function readListingsFromSheetAsFile(sheetId: string): Promise<File
   return file
 }
 
-// Get total row count across all sheets (lightweight, uses gridProperties)
-// Returns approximate data row count (excluding headers)
+// Get total row count across all sheets
+// Counts only rows with actual data (not empty rows)
+// Only counts parent rows (listings), not variation rows
 export async function getSheetRowCount(sheetId: string): Promise<number> {
   const token = await getValidAccessToken()
   
-  // Get spreadsheet metadata (includes gridProperties with rowCount)
-  const response = await fetch(
-    `${GOOGLE_SHEETS_API_BASE}/spreadsheets/${sheetId}?fields=sheets.properties(title,gridProperties.rowCount)`,
+  // Get all sheets in the spreadsheet
+  const spreadsheetResponse = await fetch(
+    `${GOOGLE_SHEETS_API_BASE}/spreadsheets/${sheetId}`,
     {
       headers: {
         'Authorization': `Bearer ${token}`
@@ -1175,39 +1305,79 @@ export async function getSheetRowCount(sheetId: string): Promise<number> {
     }
   )
   
-  if (!response.ok) {
-    throw new Error('Failed to get sheet row count')
+  if (!spreadsheetResponse.ok) {
+    throw new Error('Failed to read spreadsheet')
   }
   
-  const spreadsheet = await response.json()
+  const spreadsheet = await spreadsheetResponse.json()
   const sheets = spreadsheet.sheets || []
   
-  let totalRows = 0
-  let isFirstSheet = true
+  if (sheets.length === 0) {
+    return 0
+  }
   
+  let totalListings = 0
+  
+  // For each sheet, count only parent rows (rows with Listing ID)
   for (const sheet of sheets) {
     const sheetName = sheet.properties.title
-    const rowCount = sheet.properties.gridProperties?.rowCount || 0
     
     // Skip empty sheet names
     if (!sheetName || sheetName.trim() === '') {
       continue
     }
     
-    // First sheet includes header, others don't (we skip headers when reading)
-    if (isFirstSheet) {
-      // First sheet: subtract 1 for header
-      totalRows += Math.max(0, rowCount - 1)
-      isFirstSheet = false
-    } else {
-      // Subsequent sheets: subtract 1 for header (we skip it when reading)
-      totalRows += Math.max(0, rowCount - 1)
+    // Read only column A (Listing ID column) to identify parent rows
+    // This is lightweight - we only read one column
+    const dataResponse = await fetch(
+      `${GOOGLE_SHEETS_API_BASE}/spreadsheets/${sheetId}/values/${encodeURIComponent(sheetName)}!A:A`,
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      }
+    )
+    
+    if (!dataResponse.ok) {
+      // If we can't read the data, skip this sheet
+      continue
+    }
+    
+    const data = await dataResponse.json()
+    const values = data.values || []
+    
+    if (values.length === 0) {
+      continue
+    }
+    
+    // Find header row (look for "Listing ID" in first few rows)
+    let headerRowIndex = -1
+    for (let i = 0; i < Math.min(values.length, 10); i++) {
+      const firstCell = values[i]?.[0]?.toString().trim().toLowerCase() || ''
+      if (firstCell === 'listing id' || (firstCell.includes('listing') && firstCell.includes('id'))) {
+        headerRowIndex = i
+        break
+      }
+    }
+    
+    // If no header found, assume first row is header
+    if (headerRowIndex === -1) {
+      headerRowIndex = 0
+    }
+    
+    // Count only rows that have a non-empty Listing ID (parent rows)
+    // Skip header row and any info rows before it
+    for (let i = headerRowIndex + 1; i < values.length; i++) {
+      const listingId = values[i]?.[0]?.toString().trim() || ''
+      if (listingId !== '') {
+        totalListings++
+      }
     }
   }
   
   // Apply row count override if set (for testing/debugging)
   const { overrideRowCount } = await import('../utils/listingLimit')
-  return overrideRowCount(totalRows)
+  return overrideRowCount(totalListings)
 }
 
 // Update sheet metadata
@@ -1218,5 +1388,391 @@ export async function updateSheetMetadata(metadata: SheetMetadata): Promise<void
   metadata.version++
   
   await chrome.storage.local.set({ [storageKey]: metadata })
+}
+
+// Helper to merge row data: only update fields that match Etsy, keep sheet values for mismatched fields
+function mergeRowData(etsyRow: string[], sheetRow: string[]): string[] {
+  // Column indices:
+  // 0: Listing ID (always update if matches)
+  // 1: Title
+  // 2: Description
+  // 3: Status
+  // 4: Tags
+  // 5: Variation
+  // 6-9: Property names/options
+  // 10: Price
+  // 11: Currency Code
+  // 12: Quantity
+  // 13: SKU
+  // 14-16: Variation Price/Quantity/SKU
+  // 17-20: Materials, Shipping Profile ID, Processing Min/Max
+  // 21-25: Product ID, Property IDs (DO NOT EDIT columns)
+  
+  const merged = [...sheetRow] // Start with existing sheet row
+  
+  // Always update DO NOT EDIT columns (Product ID, Property IDs) - these are identifiers
+  if (etsyRow[21]) merged[21] = etsyRow[21] // Product ID
+  if (etsyRow[22]) merged[22] = etsyRow[22] // Property ID 1
+  if (etsyRow[23]) merged[23] = etsyRow[23] // Property Option IDs 1
+  if (etsyRow[24]) merged[24] = etsyRow[24] // Property ID 2
+  if (etsyRow[25]) merged[25] = etsyRow[25] // Property Option IDs 2
+  
+  // For other fields, only update if Etsy value matches what's in the sheet
+  // If they don't match, it means user edited it, so keep the sheet value
+  
+  // Title (1)
+  if (etsyRow[1] && sheetRow[1] && etsyRow[1].trim() === sheetRow[1].trim()) {
+    merged[1] = etsyRow[1]
+  } else if (!sheetRow[1] || sheetRow[1].trim() === '') {
+    // Sheet is empty, update it
+    merged[1] = etsyRow[1] || ''
+  }
+  
+  // Description (2)
+  if (etsyRow[2] && sheetRow[2] && etsyRow[2].trim() === sheetRow[2].trim()) {
+    merged[2] = etsyRow[2]
+  } else if (!sheetRow[2] || sheetRow[2].trim() === '') {
+    merged[2] = etsyRow[2] || ''
+  }
+  
+  // Status (3)
+  if (etsyRow[3] && sheetRow[3] && etsyRow[3].trim().toLowerCase() === sheetRow[3].trim().toLowerCase()) {
+    merged[3] = etsyRow[3]
+  } else if (!sheetRow[3] || sheetRow[3].trim() === '') {
+    merged[3] = etsyRow[3] || ''
+  }
+  
+  // Tags (4) - compare as sets
+  const etsyTags = etsyRow[4]?.split(',').map(t => t.trim().toLowerCase()).filter(t => t) || []
+  const sheetTags = sheetRow[4]?.split(',').map(t => t.trim().toLowerCase()).filter(t => t) || []
+  const tagsMatch = etsyTags.length === sheetTags.length && 
+                    etsyTags.every(t => sheetTags.includes(t))
+  if (tagsMatch) {
+    merged[4] = etsyRow[4] || ''
+  } else if (!sheetRow[4] || sheetRow[4].trim() === '') {
+    merged[4] = etsyRow[4] || ''
+  }
+  
+  // Price (10) - compare as numbers
+  const etsyPrice = parseFloat(etsyRow[10] || '0')
+  const sheetPrice = parseFloat(sheetRow[10] || '0')
+  if (Math.abs(etsyPrice - sheetPrice) < 0.01) {
+    merged[10] = etsyRow[10] || ''
+  } else if (!sheetRow[10] || sheetRow[10].trim() === '') {
+    merged[10] = etsyRow[10] || ''
+  }
+  
+  // Currency Code (11)
+  if (etsyRow[11] && sheetRow[11] && etsyRow[11].trim().toUpperCase() === sheetRow[11].trim().toUpperCase()) {
+    merged[11] = etsyRow[11]
+  } else if (!sheetRow[11] || sheetRow[11].trim() === '') {
+    merged[11] = etsyRow[11] || ''
+  }
+  
+  // Quantity (12)
+  const etsyQty = parseInt(etsyRow[12] || '0', 10)
+  const sheetQty = parseInt(sheetRow[12] || '0', 10)
+  if (etsyQty === sheetQty) {
+    merged[12] = etsyRow[12] || ''
+  } else if (!sheetRow[12] || sheetRow[12].trim() === '') {
+    merged[12] = etsyRow[12] || ''
+  }
+  
+  // SKU (13)
+  if (etsyRow[13] && sheetRow[13] && etsyRow[13].trim() === sheetRow[13].trim()) {
+    merged[13] = etsyRow[13]
+  } else if (!sheetRow[13] || sheetRow[13].trim() === '') {
+    merged[13] = etsyRow[13] || ''
+  }
+  
+  // Variation Price (14)
+  const etsyVarPrice = parseFloat(etsyRow[14] || '0')
+  const sheetVarPrice = parseFloat(sheetRow[14] || '0')
+  if (Math.abs(etsyVarPrice - sheetVarPrice) < 0.01) {
+    merged[14] = etsyRow[14] || ''
+  } else if (!sheetRow[14] || sheetRow[14].trim() === '') {
+    merged[14] = etsyRow[14] || ''
+  }
+  
+  // Variation Quantity (15)
+  const etsyVarQty = parseInt(etsyRow[15] || '0', 10)
+  const sheetVarQty = parseInt(sheetRow[15] || '0', 10)
+  if (etsyVarQty === sheetVarQty) {
+    merged[15] = etsyRow[15] || ''
+  } else if (!sheetRow[15] || sheetRow[15].trim() === '') {
+    merged[15] = etsyRow[15] || ''
+  }
+  
+  // Variation SKU (16)
+  if (etsyRow[16] && sheetRow[16] && etsyRow[16].trim() === sheetRow[16].trim()) {
+    merged[16] = etsyRow[16]
+  } else if (!sheetRow[16] || sheetRow[16].trim() === '') {
+    merged[16] = etsyRow[16] || ''
+  }
+  
+  // Materials (17) - compare as sets
+  const etsyMaterials = etsyRow[17]?.split(',').map(m => m.trim().toLowerCase()).filter(m => m) || []
+  const sheetMaterials = sheetRow[17]?.split(',').map(m => m.trim().toLowerCase()).filter(m => m) || []
+  const materialsMatch = etsyMaterials.length === sheetMaterials.length && 
+                         etsyMaterials.every(m => sheetMaterials.includes(m))
+  if (materialsMatch) {
+    merged[17] = etsyRow[17] || ''
+  } else if (!sheetRow[17] || sheetRow[17].trim() === '') {
+    merged[17] = etsyRow[17] || ''
+  }
+  
+  // Shipping Profile ID (18)
+  const etsyShipping = parseInt(etsyRow[18] || '0', 10)
+  const sheetShipping = parseInt(sheetRow[18] || '0', 10)
+  if (etsyShipping === sheetShipping) {
+    merged[18] = etsyRow[18] || ''
+  } else if (!sheetRow[18] || sheetRow[18].trim() === '') {
+    merged[18] = etsyRow[18] || ''
+  }
+  
+  // Processing Min (19)
+  const etsyProcMin = parseInt(etsyRow[19] || '0', 10)
+  const sheetProcMin = parseInt(sheetRow[19] || '0', 10)
+  if (etsyProcMin === sheetProcMin) {
+    merged[19] = etsyRow[19] || ''
+  } else if (!sheetRow[19] || sheetRow[19].trim() === '') {
+    merged[19] = etsyRow[19] || ''
+  }
+  
+  // Processing Max (20)
+  const etsyProcMax = parseInt(etsyRow[20] || '0', 10)
+  const sheetProcMax = parseInt(sheetRow[20] || '0', 10)
+  if (etsyProcMax === sheetProcMax) {
+    merged[20] = etsyRow[20] || ''
+  } else if (!sheetRow[20] || sheetRow[20].trim() === '') {
+    merged[20] = etsyRow[20] || ''
+  }
+  
+  // Property names/options (6-9) - only update if they match
+  for (let i = 6; i <= 9; i++) {
+    if (etsyRow[i] && sheetRow[i] && etsyRow[i].trim() === sheetRow[i].trim()) {
+      merged[i] = etsyRow[i]
+    } else if (!sheetRow[i] || sheetRow[i].trim() === '') {
+      merged[i] = etsyRow[i] || ''
+    }
+  }
+  
+  return merged
+}
+
+// Update IDs in Google Sheet after creating listings or variations
+// This function finds rows matching the listing and updates all IDs (listing ID, product IDs, property IDs)
+export async function updateSheetIDs(
+  shopId: number,
+  listingId: number,
+  listing: Listing // Listing from Etsy API
+): Promise<void> {
+  try {
+    // Get sheet metadata - try to get from storage first (doesn't require shop name)
+    const storageKey = `clipsy:sheet:shop_${shopId}`
+    const result = await chrome.storage.local.get(storageKey)
+    const existing = result[storageKey]
+    
+    let sheetId: string | null = null
+    
+    if (existing) {
+      // Verify sheet still exists
+      const exists = await verifySheetExists(existing.sheetId)
+      if (exists) {
+        sheetId = existing.sheetId
+      }
+    }
+    
+    // If no sheet found, try to get or create one (with empty shop name - will use storage lookup)
+    if (!sheetId) {
+      try {
+        const sheetMetadata = await getOrCreateSheet(shopId, '')
+        sheetId = sheetMetadata.sheetId
+      } catch (error) {
+        logger.warn('Could not get or create sheet for ID update:', error)
+        return // Can't update if sheet doesn't exist
+      }
+    }
+    
+    if (!sheetId) {
+      logger.warn('No sheet found for shop, skipping ID update')
+      return
+    }
+    
+    // Get all sheets in the spreadsheet
+    const token = await getValidAccessToken()
+    const spreadsheetResponse = await fetch(
+      `${GOOGLE_SHEETS_API_BASE}/spreadsheets/${sheetId}`,
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      }
+    )
+    
+    if (!spreadsheetResponse.ok) {
+      logger.warn('Failed to get spreadsheet info for ID update')
+      return
+    }
+    
+    const spreadsheet = await spreadsheetResponse.json()
+    const sheets = spreadsheet.sheets || []
+    
+    // Search all sheets for matching rows
+    for (const sheet of sheets) {
+      const sheetName = sheet.properties.title
+      
+      // Skip empty sheet names
+      if (!sheetName || sheetName.trim() === '') {
+        continue
+      }
+      
+      // Read sheet data
+      const sheetData = await readSheetData(sheetId, sheetName)
+      const rows = sheetData.values || []
+      
+      if (rows.length === 0) {
+        continue
+      }
+      
+      // Find header row
+      let headerRowIndex = -1
+      for (let i = 0; i < Math.min(rows.length, 10); i++) {
+        const firstCell = rows[i]?.[0]?.toString().trim().toLowerCase() || ''
+        if (firstCell === 'listing id' || (firstCell.includes('listing') && firstCell.includes('id'))) {
+          headerRowIndex = i
+          break
+        }
+      }
+      
+      if (headerRowIndex === -1) {
+        continue // No header found, skip this sheet
+      }
+      
+      // Find rows matching this listing
+      // Match by: listing title, SKU, or variation SKU
+      const rowsToUpdate: Array<{ rowIndex: number; data: string[] }> = []
+      
+      for (let i = headerRowIndex + 1; i < rows.length; i++) {
+        const row = rows[i] || []
+        const existingListingId = row[0]?.trim()
+        const existingTitle = row[1]?.trim()
+        const existingSKU = row[13]?.trim() // Column 13 is SKU
+        const existingVariationSKU = row[16]?.trim() // Column 16 is Variation SKU
+        const existingProductId = row[21]?.trim() // Column 21 is Product ID
+        
+        // Check if this row matches the listing
+        let matches = false
+        
+        // Match by listing ID (if already set)
+        if (existingListingId && existingListingId === listingId.toString()) {
+          matches = true
+        }
+        // Match by title (for new listings)
+        else if (existingTitle && existingTitle === listing.title) {
+          matches = true
+        }
+        // Match by SKU (for non-variation listings)
+        else if (existingSKU && !listing.has_variations) {
+          const product = listing.inventory?.products?.find((p) => !p.is_deleted)
+          if (product && product.sku === existingSKU) {
+            matches = true
+          }
+        }
+        // Match by variation SKU (for variation listings)
+        else if (existingVariationSKU && listing.has_variations) {
+          const product = listing.inventory?.products?.find((p) => !p.is_deleted && p.sku === existingVariationSKU)
+          if (product) {
+            matches = true
+          }
+        }
+        
+        if (matches) {
+          // Update this row with IDs from the listing
+          const updatedRow = [...row]
+          
+          // Update Listing ID (column 0)
+          updatedRow[0] = listingId.toString()
+          
+          // Update Product ID (column 21) and Property IDs (columns 22-25) for variations
+          if (listing.has_variations && listing.inventory?.products) {
+            // Find matching product by SKU or property values
+            let matchingProduct: Listing['inventory']['products'][0] | undefined = undefined
+            
+            if (existingVariationSKU) {
+              matchingProduct = listing.inventory.products.find((p) => 
+                !p.is_deleted && p.sku === existingVariationSKU
+              )
+            } else if (existingProductId) {
+              matchingProduct = listing.inventory.products.find((p) => 
+                !p.is_deleted && p.product_id.toString() === existingProductId
+              )
+            } else {
+              // Match by property values
+              const existingProp1 = row[7]?.trim() // Property Option 1
+              const existingProp2 = row[9]?.trim() // Property Option 2
+              
+              matchingProduct = listing.inventory.products.find((p) => {
+                if (p.is_deleted) return false
+                const prop1 = p.property_values?.[0]
+                const prop2 = p.property_values?.[1]
+                const prop1Match = !existingProp1 || (prop1 && prop1.values?.some((v) => v === existingProp1))
+                const prop2Match = !existingProp2 || (prop2 && prop2.values?.some((v) => v === existingProp2))
+                return prop1Match && prop2Match
+              })
+            }
+            
+            if (matchingProduct) {
+              // Update Product ID
+              updatedRow[21] = matchingProduct.product_id.toString()
+              
+              // Update Property IDs
+              const prop1 = matchingProduct.property_values?.[0]
+              const prop2 = matchingProduct.property_values?.[1]
+              
+              if (prop1) {
+                updatedRow[22] = prop1.property_id.toString() // Property ID 1
+                updatedRow[23] = (prop1.value_ids || []).join(',') // Property Option IDs 1
+              }
+              
+              if (prop2) {
+                updatedRow[24] = prop2.property_id.toString() // Property ID 2
+                updatedRow[25] = (prop2.value_ids || []).join(',') // Property Option IDs 2
+              }
+            }
+          } else {
+            // Non-variation listing - update product ID from first product
+            const product = listing.inventory?.products?.find((p) => !p.is_deleted)
+            if (product) {
+              updatedRow[21] = product.product_id.toString()
+            }
+          }
+          
+          rowsToUpdate.push({ rowIndex: i + 1, data: updatedRow }) // +1 because Sheets API is 1-based
+        }
+      }
+      
+      // Update rows in batches
+      if (rowsToUpdate.length > 0) {
+        // Update each row individually using batchUpdateSheet
+        for (const { rowIndex, data } of rowsToUpdate) {
+          // Ensure row has at least 26 columns
+          const paddedData = data.length < 26 
+            ? [...data, ...Array(26 - data.length).fill('')]
+            : data
+          
+          await batchUpdateSheet(sheetId, sheetName, [paddedData], rowIndex)
+          
+          // Small delay to avoid rate limiting
+          await new Promise(resolve => setTimeout(resolve, 100))
+        }
+        
+        logger.log(`Updated ${rowsToUpdate.length} row(s) in sheet "${sheetName}" with IDs for listing ${listingId}`)
+      }
+    }
+  } catch (error) {
+    logger.error('Error updating sheet IDs:', error)
+    // Don't throw - this is a non-critical operation
+  }
 }
 

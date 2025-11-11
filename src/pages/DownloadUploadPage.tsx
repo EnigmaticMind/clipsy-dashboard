@@ -74,9 +74,27 @@ export default function DownloadUploadPage() {
     checkListingCount();
   }, []);
 
-  // Check for pending review prompt on mount
+  // Check for pending review prompt on mount and when tab becomes visible
   useEffect(() => {
-    reviewPrompt.checkPendingReviewPrompt();
+    const checkPrompt = () => {
+      reviewPrompt.checkPendingReviewPrompt();
+    };
+
+    // Check on mount
+    checkPrompt();
+
+    // Check when tab becomes visible (user returns to tab)
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        checkPrompt();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [reviewPrompt]);
 
   const handleDownload = async (destination: "csv" | "googleSheets") => {
@@ -161,7 +179,7 @@ export default function DownloadUploadPage() {
         const writtenSheetName = await writeListingsToSheet(
           sheet.sheetId,
           listings,
-          listingStatus
+          status as ListingStatus
         );
 
         // Update metadata

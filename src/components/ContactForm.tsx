@@ -75,14 +75,6 @@ export default function ContactForm() {
 
   return (
     <div className="bg-white rounded-xl shadow-lg p-8">
-      <h2 className="text-2xl font-semibold text-gray-900 mb-4">
-        Contact & Feedback
-      </h2>
-      <p className="text-gray-600 mb-6">
-        Have a suggestion, found a bug, or want to share feedback? We'd love to
-        hear from you!
-      </p>
-
       {status === "success" ? (
         <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
           <div className="text-green-600 font-semibold mb-2">
@@ -148,7 +140,6 @@ export default function ContactForm() {
               className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
             >
               <option value="">Select a subject...</option>
-              <option value="suggestion">Feature Suggestion</option>
               <option value="bug">Bug Report</option>
               <option value="improvement">Improvement Idea</option>
               <option value="question">Question</option>
