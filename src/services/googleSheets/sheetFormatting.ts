@@ -2,7 +2,6 @@
 
 import { getValidAccessToken } from '../googleSheetsOAuth'
 import { GOOGLE_SHEETS_API_BASE } from './types'
-import { COLUMNS } from './constants'
 
 // Apply formatting to make the sheet look better
 export async function applySheetFormatting(

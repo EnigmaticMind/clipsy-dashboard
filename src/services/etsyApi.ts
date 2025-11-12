@@ -427,7 +427,7 @@ export async function updateListing(shopID: number, listingID: number, updates: 
 }
 
 // Delete a listing
-export async function deleteListing(shopID: number, listingID: number): Promise<void> {
+export async function deleteListing(_shopID: number, listingID: number): Promise<void> {
   // shopID parameter kept for backwards compatibility but not used in endpoint
   await makeEtsyRequest(
     'DELETE',

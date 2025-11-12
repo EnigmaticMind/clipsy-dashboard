@@ -473,7 +473,8 @@ export async function removeDeletedItemsFromSheet(
       
       try {
         // Read all rows from the sheet
-        const rows = await readSheetData(sheetId, sheetName)
+        const sheetData = await readSheetData(sheetId, sheetName)
+        const rows = sheetData.values
         
         if (rows.length === 0) {
           continue
